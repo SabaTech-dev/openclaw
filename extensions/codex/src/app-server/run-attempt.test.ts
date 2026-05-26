@@ -5306,7 +5306,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/started",
@@ -5919,7 +5919,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/completed",
@@ -5994,7 +5994,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/agentMessage/delta",
@@ -6077,7 +6077,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/agentMessage/delta",
@@ -6168,7 +6168,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/completed",
@@ -6248,7 +6248,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "rawResponseItem/completed",
@@ -6326,7 +6326,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "rawResponseItem/completed",
@@ -6403,7 +6403,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/started",
@@ -6486,7 +6486,7 @@ describe("runCodexAppServerAttempt", () => {
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith("turn/start", expect.anything(), expect.anything()),
-      { interval: 1 },
+      fastWait,
     );
     await notify({
       method: "item/started",

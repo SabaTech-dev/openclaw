@@ -16,6 +16,7 @@ import {
   emitAgentEvent as emitGlobalAgentEvent,
   finalizeHarnessContextEngineTurn,
   formatErrorMessage,
+  getAgentHarnessHookRunner,
   getBeforeToolCallPolicyDiagnosticState,
   isActiveHarnessContextEngine,
   isSubagentSessionKey,
@@ -1307,6 +1308,7 @@ export async function runCodexAppServerAttempt(
     channelId: hookChannelId,
     ...hookContextWindowFields,
   };
+  const hookRunner = getAgentHarnessHookRunner();
   const activeContextEnginePluginId = activeContextEngine
     ? resolveContextEngineOwnerPluginId(activeContextEngine)
     : undefined;
@@ -3034,6 +3036,7 @@ export async function runCodexAppServerAttempt(
     runAgentHarnessLlmInputHook({
       event: buildLlmInputEvent(),
       ctx: hookContext,
+      hookRunner,
     });
     emitCodexAppServerEvent(params, {
       stream: "codex_app_server.lifecycle",
@@ -3123,6 +3126,7 @@ export async function runCodexAppServerAttempt(
           assistantTexts: [],
         },
         ctx: hookContext,
+        hookRunner,
       });
       const turnStartFailureKind = classifyCodexModelCallFailureKind(turnStartError);
       emitCodexModelCallError(
@@ -3137,6 +3141,7 @@ export async function runCodexAppServerAttempt(
           durationMs: Date.now() - attemptStartedAt,
         },
         ctx: hookContext,
+        hookRunner,
       });
       if (!timedOut) {
         await unsubscribeCodexThreadBestEffort(client, {
@@ -3466,6 +3471,7 @@ export async function runCodexAppServerAttempt(
         ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
       },
       ctx: hookContext,
+      hookRunner,
     });
     await runCodexAgentEndHook(params, {
       event: {
@@ -3475,6 +3481,7 @@ export async function runCodexAppServerAttempt(
         durationMs: Date.now() - attemptStartedAt,
       },
       ctx: hookContext,
+      hookRunner,
     });
     const completedTurnStatus = activeProjector.getCompletedTurnStatus();
     shouldDelayNativeHookRelayUnregister =
