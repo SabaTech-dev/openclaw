@@ -8,6 +8,7 @@ import { sanitizeCodexHistoryImagePayloads } from "./image-payload-sanitizer.js"
 
 export type CodexMirroredSessionHistoryScope = {
   agentId: string;
+  path?: string;
   sessionId: string;
 };
 
@@ -20,7 +21,7 @@ export async function readCodexMirroredSessionHistoryMessages(
     if (!agentId || !sessionId) {
       return [];
     }
-    const entries = loadSqliteSessionTranscriptEvents({ agentId, sessionId })
+    const entries = loadSqliteSessionTranscriptEvents({ agentId, path: scope.path, sessionId })
       .map((entry) => entry.event)
       .filter((entry): entry is TranscriptEntry => Boolean(entry && typeof entry === "object"));
     if (entries.length === 0) {

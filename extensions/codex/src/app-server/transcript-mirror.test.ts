@@ -23,6 +23,7 @@ import {
   makeAgentUserMessage,
 } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
 import { attachCodexMirrorIdentity, mirrorCodexAppServerTranscript } from "./transcript-mirror.js";
 
 const emitSessionTranscriptUpdateMock = vi.hoisted(() => vi.fn());
@@ -141,6 +142,61 @@ describe("mirrorCodexAppServerTranscript", () => {
     expect(raw).toContain(
       `"idempotencyKey":"scope-1:toolResult:${expectedFingerprint(toolResultMessage)}"`,
     );
+  });
+
+  it("reads mirrored history from the requested SQLite transcript path", async () => {
+    const firstSessionFile = await createTempSessionFile();
+    const secondSessionFile = await createTempSessionFile();
+    const sessionId = "session-1";
+
+    await mirrorCodexAppServerTranscript({
+      path: firstSessionFile,
+      sessionId,
+      sessionKey: "agent:main:main",
+      messages: [
+        makeAgentUserMessage({
+          content: [{ type: "text", text: "first path" }],
+          timestamp: Date.now(),
+        }),
+      ],
+      idempotencyScope: "scope-1",
+    });
+    await mirrorCodexAppServerTranscript({
+      path: secondSessionFile,
+      sessionId,
+      sessionKey: "agent:main:main",
+      messages: [
+        makeAgentUserMessage({
+          content: [{ type: "text", text: "second path" }],
+          timestamp: Date.now() + 1,
+        }),
+      ],
+      idempotencyScope: "scope-2",
+    });
+
+    const firstHistory = await readCodexMirroredSessionHistoryMessages({
+      agentId: "main",
+      path: firstSessionFile,
+      sessionId,
+    });
+    const secondHistory = await readCodexMirroredSessionHistoryMessages({
+      agentId: "main",
+      path: secondSessionFile,
+      sessionId,
+    });
+
+    expect(firstHistory).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: [{ type: "text", text: "first path" }],
+      }),
+    ]);
+    expect(secondHistory).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: [{ type: "text", text: "second path" }],
+      }),
+    ]);
   });
 
   it("emits message-bearing updates for newly appended mirrored messages only", async () => {
