@@ -210,4 +210,60 @@ describe("defineToolPlugin", () => {
       tools: [{ name: "metadata_tool", description: "Static tool." }],
     });
   });
+
+  it("rejects non-JSON-safe tool parameter schemas before runtime registration", () => {
+    const parameters = {
+      type: "object",
+      properties: {
+        angle: {
+          type: "number",
+          default: 1n,
+        },
+      },
+    };
+
+    expect(() =>
+      defineToolPlugin({
+        id: "fuzzplugin",
+        name: "Fuzz Plugin",
+        description: "Fuzz plugin.",
+        tools: (tool) => [
+          tool({
+            name: "fuzz_move_angles",
+            description: "Move angles.",
+            parameters: parameters as never,
+            execute: () => "ok",
+          }),
+        ],
+      }),
+    ).toThrow(
+      "tool plugin tool fuzz_move_angles parameters must be a JSON-compatible schema object",
+    );
+  });
+
+  it("rejects cyclic tool parameter schemas before metadata generation", () => {
+    const parameters = {
+      type: "object",
+      properties: {} as Record<string, unknown>,
+    };
+    parameters.properties.self = parameters;
+
+    expect(() =>
+      defineToolPlugin({
+        id: "mockplugin",
+        name: "Mock Plugin",
+        description: "Mock plugin.",
+        tools: (tool) => [
+          tool({
+            name: "mock_move_angles",
+            description: "Move angles.",
+            parameters: parameters as never,
+            execute: () => "ok",
+          }),
+        ],
+      }),
+    ).toThrow(
+      "tool plugin tool mock_move_angles parameters must be a JSON-compatible schema object",
+    );
+  });
 });
