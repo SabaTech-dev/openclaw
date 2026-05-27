@@ -119,6 +119,7 @@ function resolveProfileAuthFromStore(params: { agentDir: string; profileId: stri
   }
   const credential = ensureAuthProfileStore(params.agentDir, {
     allowKeychainPrompt: false,
+    externalCliProfileIds: [profileId],
   }).profiles[profileId];
   return { provider: credential?.provider, mode: credential?.type };
 }
@@ -165,6 +166,7 @@ function resolveHarnessAuthProfileSelection(params: {
 
   const store = ensureAuthProfileStore(params.agentDir, {
     allowKeychainPrompt: false,
+    externalCliProviderIds: [harnessAuthProvider],
   });
   const authProfileId = resolveAuthProfileOrder({
     cfg: params.config,
