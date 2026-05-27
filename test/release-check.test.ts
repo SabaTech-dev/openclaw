@@ -633,6 +633,34 @@ describe("collectMissingPackPaths", () => {
     }
   });
 
+  it("rejects packed plugin SDK root aliases that depend on minified export letters", () => {
+    const root = mkdtempSync(join(tmpdir(), "release-check-packed-root-alias-"));
+    try {
+      const packageRoot = join(root, "openclaw");
+      const pluginSdkDir = join(packageRoot, "dist", "plugin-sdk");
+      mkdirSync(pluginSdkDir, { recursive: true });
+      writeFileSync(
+        join(packageRoot, "package.json"),
+        `${JSON.stringify({ name: "openclaw", version: "2026.5.14-beta.3", dependencies: {} })}\n`,
+      );
+      writeFileSync(
+        join(pluginSdkDir, "root-alias.cjs"),
+        "module.exports = { onDiagnosticEvent: mod.r };\n",
+      );
+
+      expect(
+        collectPackedInstalledPackageVerificationErrors({
+          expectedVersion: "2026.5.14-beta.3",
+          packageRoot,
+        }),
+      ).toContain(
+        "installed package dist/plugin-sdk/root-alias.cjs depends on a single-letter bundled export alias.",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires bundled plugin runtime sidecars that dynamic plugin boundaries resolve at runtime", () => {
     expect(requiredBundledPluginPackPaths).not.toContain(
       bundledDistPluginFile("slack", "runtime-api.js"),

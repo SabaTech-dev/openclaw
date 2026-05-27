@@ -452,6 +452,7 @@ async function executeCodexDiagnosticsAddon(
     gatewayClientScopes: params.ctx.GatewayClientScopes,
     sessionKey: params.sessionKey,
     sessionId: targetSessionEntry?.sessionId,
+    authProfileId: targetSessionEntry?.authProfileOverride,
     commandBody,
     config: params.cfg,
     from: params.command.from,

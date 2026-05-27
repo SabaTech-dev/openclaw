@@ -37,7 +37,7 @@ export async function persistSessionEntry(
       const merged = mergeSessionEntry(existing, params.entry);
       for (const field of params.clearedFields ?? []) {
         if (!Object.hasOwn(params.entry, field)) {
-          (merged as Record<string, unknown>)[field] = undefined;
+          Reflect.deleteProperty(merged, field);
         }
       }
       return merged;

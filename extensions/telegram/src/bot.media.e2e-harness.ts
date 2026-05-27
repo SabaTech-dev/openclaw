@@ -1,8 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
 import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runtime";
-import { beforeEach, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, vi, type Mock } from "vitest";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import {
   resetTopicNameCacheForTest,
@@ -72,6 +74,20 @@ async function defaultSaveMediaBuffer(buffer: Buffer, contentType?: string) {
 }
 
 const saveMediaBufferSpy: Mock = vi.fn(defaultSaveMediaBuffer);
+let mediaHarnessStoreRoot: string | undefined;
+
+function ensureMediaHarnessStoreRoot(): string {
+  mediaHarnessStoreRoot ??= mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-media-e2e-"));
+  return mediaHarnessStoreRoot;
+}
+
+function cleanupMediaHarnessStoreRoot(): void {
+  if (!mediaHarnessStoreRoot) {
+    return;
+  }
+  rmSync(mediaHarnessStoreRoot, { recursive: true, force: true });
+  mediaHarnessStoreRoot = undefined;
+}
 
 export function setNextSavedMediaPath(params: {
   path: string;
@@ -183,6 +199,9 @@ export const telegramBotDepsForTest: TelegramBotDeps = {
   getSessionEntry: vi.fn(() => undefined) as TelegramBotDeps["getSessionEntry"],
   listSessionEntries: vi.fn(() => []) as TelegramBotDeps["listSessionEntries"],
   patchSessionEntry: vi.fn(async () => null) as TelegramBotDeps["patchSessionEntry"],
+  resolveStorePath: vi.fn(
+    (storePath?: string) => storePath ?? path.join(ensureMediaHarnessStoreRoot(), "sessions.json"),
+  ) as TelegramBotDeps["resolveStorePath"],
   readChannelAllowFromStore: vi.fn(async () => []) as TelegramBotDeps["readChannelAllowFromStore"],
   upsertChannelPairingRequest: vi.fn(async () => ({
     code: "PAIRCODE",
@@ -201,12 +220,18 @@ export const telegramBotDepsForTest: TelegramBotDeps = {
 };
 
 beforeEach(() => {
+  cleanupMediaHarnessStoreRoot();
+  ensureMediaHarnessStoreRoot();
   resetInboundDedupe();
   topicNameStoresForTest.clear();
   resetTopicNameCacheForTest();
   resetSaveMediaBufferMock();
   resetUndiciFetchMock();
   resetReadRemoteMediaBufferMock();
+});
+
+afterEach(() => {
+  cleanupMediaHarnessStoreRoot();
 });
 
 vi.doMock("./bot.runtime.js", () => ({
@@ -262,6 +287,8 @@ vi.doMock("./bot-message-context.session.runtime.js", async () => {
   return {
     ...actual,
     readSessionUpdatedAt: () => undefined,
+    resolveStorePath: (storePath?: string) =>
+      storePath ?? path.join(ensureMediaHarnessStoreRoot(), "sessions.json"),
   };
 });
 

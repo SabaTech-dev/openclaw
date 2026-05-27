@@ -27,6 +27,7 @@ const ACP_BACKEND_READY_POLL_MS = 50;
 const PROVIDER_AUTH_PREWARM_START_DELAY_MS = 1_000;
 const PROVIDER_AUTH_REWARM_DELAY_MS = 1_000;
 const STARTUP_PROVIDER_DISCOVERY_TIMEOUT_MS = 5_000;
+const DEFERRED_SIDECAR_START_DELAY_MS = 100;
 const QMD_STARTUP_IDLE_DELAY_MS = 120_000;
 
 type Awaitable<T> = T | Promise<T>;
@@ -904,6 +905,7 @@ export async function startGatewayPostAttachRuntime(
     isClosing?: () => boolean;
     startupTrace?: GatewayStartupTrace;
     deferSidecars?: boolean;
+    logReadyOnSidecars?: boolean;
     providerAuthPrewarm?: {
       enabled?: boolean;
       delayMs?: number;
@@ -913,21 +915,38 @@ export async function startGatewayPostAttachRuntime(
   runtimeDeps: GatewayPostAttachRuntimeDeps = defaultGatewayPostAttachRuntimeDeps,
 ) {
   let pluginRegistry = params.pluginRegistry;
-  if (!params.minimalTestGateway && params.loadStartupPlugins) {
-    params.onStartupPluginsLoading?.();
-    const loaded = await measureStartup(params.startupTrace, "plugins.runtime-post-bind", () =>
-      params.loadStartupPlugins!(),
-    );
-    pluginRegistry = loaded.pluginRegistry;
-    params.startupTrace?.detail("plugins.runtime-post-bind", [
-      [
-        "loadedPluginCount",
-        pluginRegistry.plugins.filter((plugin) => plugin.status === "loaded").length,
-      ],
-      ["gatewayMethodCount", loaded.gatewayMethods.length],
-    ]);
-    await params.onStartupPluginsLoaded?.(loaded);
-  }
+  let startupPluginsLoaded = false;
+  let startupPluginsLoadPromise: Promise<{
+    pluginRegistry: PluginRegistry;
+    gatewayMethods: string[];
+  }> | null = null;
+  const loadStartupPluginsIfNeeded = async () => {
+    if (params.minimalTestGateway || !params.loadStartupPlugins) {
+      return { pluginRegistry, gatewayMethods: [] };
+    }
+    if (startupPluginsLoaded) {
+      return { pluginRegistry, gatewayMethods: [] };
+    }
+    startupPluginsLoadPromise ??= (async () => {
+      params.onStartupPluginsLoading?.();
+      const loaded = await measureStartup(params.startupTrace, "plugins.runtime-post-bind", () =>
+        params.loadStartupPlugins!(),
+      );
+      pluginRegistry = loaded.pluginRegistry;
+      startupPluginsLoaded = true;
+      params.startupTrace?.detail("plugins.runtime-post-bind", [
+        [
+          "loadedPluginCount",
+          pluginRegistry.plugins.filter((plugin) => plugin.status === "loaded").length,
+        ],
+        ["gatewayMethodCount", loaded.gatewayMethods.length],
+      ]);
+      await params.onStartupPluginsLoaded?.(loaded);
+      return loaded;
+    })();
+    return await startupPluginsLoadPromise;
+  };
+  await loadStartupPluginsIfNeeded();
 
   const startupLogPromise = measureStartup(params.startupTrace, "post-attach.log", () =>
     runtimeDeps.logGatewayStartup({
@@ -978,10 +997,20 @@ export async function startGatewayPostAttachRuntime(
     reportedPluginServices = pluginServices;
     params.onPluginServices?.(pluginServices);
   };
+  const waitForSidecarStartTurn = () =>
+    new Promise<void>((resolve) => {
+      if (params.deferSidecars === true) {
+        const timer = setTimeout(resolve, DEFERRED_SIDECAR_START_DELAY_MS);
+        timer.unref?.();
+        return;
+      }
+      setImmediate(resolve);
+    });
 
   const sidecarsPromise = params.minimalTestGateway
     ? Promise.resolve({ pluginServices: null, pluginRegistry, postReadySidecars: [] })
-    : new Promise<void>((resolve) => setImmediate(resolve)).then(async () => {
+    : waitForSidecarStartTurn().then(async () => {
+        await loadStartupPluginsIfNeeded();
         params.log.info("starting channels and sidecars...");
         const loaderStatsBefore = getPluginModuleLoaderStats();
         const result = await measureStartup(params.startupTrace, "sidecars.total", () =>
@@ -1051,7 +1080,9 @@ export async function startGatewayPostAttachRuntime(
           ["postReadySidecarCount", postReadySidecars.length + gatewayLifetimeSidecars.length],
         ]);
         params.startupTrace?.mark("sidecars.ready");
-        params.log.info("gateway ready");
+        if (params.logReadyOnSidecars !== false) {
+          params.log.info("gateway ready");
+        }
         return { ...result, postReadySidecars, gatewayLifetimeSidecars, pluginRegistry };
       });
 

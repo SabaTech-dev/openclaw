@@ -1302,6 +1302,7 @@ describe("registerTelegramNativeCommands — session metadata", () => {
   it("passes persisted topic session identity to plugin commands", async () => {
     sessionMocks.sessionStore.value = {
       "agent:main:telegram:group:-1001234567890:topic:42": {
+        authProfileOverride: "openai-codex:owner@example.com",
         sessionId: "sess-topic",
         updatedAt: 1,
       },
@@ -1347,6 +1348,7 @@ describe("registerTelegramNativeCommands — session metadata", () => {
       {
         sessionKey: "agent:main:telegram:group:-1001234567890:topic:42",
         sessionId: "sess-topic",
+        authProfileId: "openai-codex:owner@example.com",
         messageThreadId: 42,
       },
       "plugin command params",

@@ -638,12 +638,17 @@ function resolveExternalRunFailureTextForConversation(params: {
   text: string;
   sessionCtx: TemplateContext;
   isGenericRunnerFailure: boolean;
+  suppressInNonDirect?: boolean;
   cfg?: OpenClawConfig;
 }): string {
   if (!isNonDirectConversationContext(params.sessionCtx)) {
     return params.text;
   }
-  if (!params.isGenericRunnerFailure && !params.text.includes(AGENT_FAILED_BEFORE_REPLY_TEXT)) {
+  if (
+    !params.suppressInNonDirect &&
+    !params.isGenericRunnerFailure &&
+    !params.text.includes(AGENT_FAILED_BEFORE_REPLY_TEXT)
+  ) {
     return params.text;
   }
   // Match normal reply routing: default group/channel failures stay silent,
@@ -819,6 +824,7 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
         text: buildRateLimitCooldownMessage(params.err),
         sessionCtx: params.sessionCtx,
         isGenericRunnerFailure: false,
+        suppressInNonDirect: true,
         cfg: params.cfg,
       }),
     });
@@ -830,6 +836,7 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
         text: rateLimitOrOverloadedCopy,
         sessionCtx: params.sessionCtx,
         isGenericRunnerFailure: false,
+        suppressInNonDirect: true,
         cfg: params.cfg,
       }),
     });
@@ -1870,6 +1877,7 @@ export async function runAgentTurnWithFallback(params: {
       const onToolResult = params.opts?.onToolResult;
       const outcomePlan = buildAgentRuntimeOutcomePlan();
       const runLane = CommandLane.Main;
+      const runAbortSignal = params.replyOperation?.abortSignal ?? params.opts?.abortSignal;
       let queuedUserMessagePersistedAcrossFallback = false;
       let assistantErrorPersistedAcrossFallback = false;
       const userTurnTranscriptRecorder =
@@ -1891,6 +1899,7 @@ export async function runAgentTurnWithFallback(params: {
           runId,
           sessionId: params.followupRun.run.sessionId,
           lane: runLane,
+          abortSignal: runAbortSignal,
           resolveAgentHarnessRuntimeOverride: (provider) =>
             resolveSessionRuntimeOverrideForProvider({
               provider,
@@ -2088,7 +2097,7 @@ export async function runAgentTurnWithFallback(params: {
                     agentAccountId: params.followupRun.run.agentAccountId,
                     senderIsOwner: params.followupRun.run.senderIsOwner,
                     disableTools: params.opts?.disableTools,
-                    abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
+                    abortSignal: runAbortSignal,
                     replyOperation: params.replyOperation,
                   },
                   transformResult: (rawResult) =>
@@ -2218,7 +2227,7 @@ export async function runAgentTurnWithFallback(params: {
                     bootstrapContextRunKind: params.opts?.isHeartbeat ? "heartbeat" : "default",
                     images: currentTurnImages.images,
                     imageOrder: currentTurnImages.imageOrder,
-                    abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
+                    abortSignal: runAbortSignal,
                     replyOperation: params.replyOperation,
                     blockReplyBreak: params.resolvedBlockStreamingBreak,
                     blockReplyChunking: params.blockReplyChunking,
@@ -2812,6 +2821,7 @@ export async function runAgentTurnWithFallback(params: {
         text: fallbackText,
         sessionCtx: params.sessionCtx,
         isGenericRunnerFailure: externalRunFailureReply?.isGenericRunnerFailure ?? false,
+        suppressInNonDirect: Boolean(isRateLimit || rateLimitOrOverloadedCopy),
         cfg: params.followupRun.run.config,
       });
 
@@ -2876,7 +2886,13 @@ export async function runAgentTurnWithFallback(params: {
       if (formattedErrorCandidate) {
         runResult.payloads = [
           markAgentRunFailureReplyPayload({
-            text: formattedErrorCandidate,
+            text: resolveExternalRunFailureTextForConversation({
+              text: formattedErrorCandidate,
+              sessionCtx: params.sessionCtx,
+              isGenericRunnerFailure: false,
+              suppressInNonDirect: true,
+              cfg: params.followupRun.run.config,
+            }),
             isError: true,
           }),
         ];
