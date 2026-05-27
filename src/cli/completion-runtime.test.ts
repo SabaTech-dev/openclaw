@@ -43,34 +43,35 @@ describe("completion runtime", () => {
   });
 
   it("installs dynamic profile sourcing without writing completion cache files", async () => {
+    const cachePath = path.join(stateDir, "completions", "openclaw.zsh");
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
+    await fs.writeFile(cachePath, "#compdef openclaw\n", "utf-8");
+
     await installCompletion("zsh", true, "openclaw");
 
     const profile = await fs.readFile(path.join(homeDir, ".zshrc"), "utf-8");
-    expect(profile).toContain("source <(openclaw completion --shell zsh)");
-    await expect(fs.stat(path.join(stateDir, "completions"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    expect(profile).toContain(`[ -f "${cachePath}" ] && source "${cachePath}"`);
   });
 
   it("rewrites a retired state-dir completion cache profile line", async () => {
     const retiredCachePath = path.join(stateDir, "completions", "openclaw.zsh");
+    await fs.mkdir(path.dirname(retiredCachePath), { recursive: true });
+    await fs.writeFile(retiredCachePath, "#compdef openclaw\n", "utf-8");
     await fs.writeFile(path.join(homeDir, ".zshrc"), `source ${retiredCachePath}\n`, "utf-8");
 
     const status = await checkShellCompletionStatus("openclaw");
     expect(status).toMatchObject({
-      profileInstalled: false,
-      retiredCachePath,
+      cacheExists: true,
+      cachePath: retiredCachePath,
+      profileInstalled: true,
       shell: "zsh",
-      usesRetiredCache: true,
+      usesSlowPattern: false,
     });
 
-    await installCompletion("zsh", true, "openclaw", {
-      retiredCachePath: status.retiredCachePath,
-    });
+    await installCompletion("zsh", true, "openclaw");
 
     const profile = await fs.readFile(path.join(homeDir, ".zshrc"), "utf-8");
-    expect(profile).toContain("source <(openclaw completion --shell zsh)");
-    expect(profile).not.toContain(retiredCachePath);
+    expect(profile).toContain(`[ -f "${retiredCachePath}" ] && source "${retiredCachePath}"`);
   });
 
   it("rejects install when the completion cache is missing", async () => {

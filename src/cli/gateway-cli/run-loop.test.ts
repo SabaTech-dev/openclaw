@@ -607,13 +607,6 @@ describe("runGatewayLoop", () => {
       expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "compacting" });
       expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "all" });
       expect(markRestartAbortedMainSessions).toHaveBeenCalledWith({
-        cfg: {
-          gateway: {
-            reload: {
-              deferralTimeoutMs: 90_000,
-            },
-          },
-        },
         sessionIds: new Set(["session-deferral-timeout"]),
         sessionKeys: new Set(["agent:main:deferral-timeout"]),
         reason: "config reload forced restart",
@@ -1216,13 +1209,6 @@ describe("runGatewayLoop", () => {
       expect(consumeGatewaySigusr1RestartAuthorization).toHaveBeenCalledOnce();
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledOnce();
       expect(markRestartAbortedMainSessions).toHaveBeenCalledWith({
-        cfg: {
-          gateway: {
-            reload: {
-              deferralTimeoutMs: 90_000,
-            },
-          },
-        },
         sessionIds: new Set(["session-file-intent"]),
         sessionKeys: new Set(["agent:main:file-intent"]),
         reason: "file-intent restart",

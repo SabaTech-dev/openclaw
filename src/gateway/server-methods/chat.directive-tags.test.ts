@@ -3228,7 +3228,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       expect(context.dedupe.get("chat:idem-user-transcript-gate-pass-error")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
       const message = userUpdateMessage(userUpdate);
-      expect(userUpdate?.sessionFile.endsWith("sess.jsonl")).toBe(true);
+      expect(userUpdate?.agentId).toBe("main");
+      expect(userUpdate?.sessionId).toBe(mockState.sessionId);
       expect(userUpdate?.sessionKey).toBe("main");
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("prompt allowed before model error");
@@ -4646,7 +4647,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       expect(context.dedupe.get("chat:idem-user-transcript-error-hook-pre-start")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
       const message = userUpdateMessage(userUpdate);
-      expect(userUpdate?.sessionFile.endsWith("sess.jsonl")).toBe(true);
+      expect(userUpdate?.agentId).toBe("main");
+      expect(userUpdate?.sessionId).toBe(mockState.sessionId);
       expect(userUpdate?.sessionKey).toBe("main");
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before hooked startup failure");
@@ -4674,7 +4676,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       );
       const userUpdate = findUserUpdate();
       const message = userUpdateMessage(userUpdate);
-      expect(userUpdate?.sessionFile.endsWith("sess.jsonl")).toBe(true);
+      expect(userUpdate?.agentId).toBe("main");
+      expect(userUpdate?.sessionId).toBe(mockState.sessionId);
       expect(userUpdate?.sessionKey).toBe("main");
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before cli startup failure");
@@ -4757,7 +4760,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       ).toBe(false);
       const userUpdate = findUserUpdate();
       const message = userUpdateMessage(userUpdate);
-      expect(userUpdate?.sessionFile.endsWith("sess.jsonl")).toBe(true);
+      expect(userUpdate?.agentId).toBe("main");
+      expect(userUpdate?.sessionId).toBe(mockState.sessionId);
       expect(userUpdate?.sessionKey).toBe("main");
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before agent error payload");
@@ -4816,7 +4820,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       expect(context.dedupe.get("chat:idem-user-transcript-agent-error-hook-pass")?.ok).toBe(false);
       const userUpdate = findUserUpdate();
       const message = userUpdateMessage(userUpdate);
-      expect(userUpdate?.sessionFile.endsWith("sess.jsonl")).toBe(true);
+      expect(userUpdate?.agentId).toBe("main");
+      expect(userUpdate?.sessionId).toBe(mockState.sessionId);
       expect(userUpdate?.sessionKey).toBe("main");
       expect(message?.role).toBe("user");
       expect(message?.content).toBe("hello before hooked agent error payload");
