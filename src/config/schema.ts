@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { CHANNEL_IDS } from "../channels/ids.js";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
 import { computeBaseConfigSchemaResponse } from "./schema-base.js";
@@ -161,6 +162,9 @@ const EXTENSION_SCHEMA_MAX_ITEMS = 256;
 
 function schemaJsonBytes(schema: JsonSchemaNode): number {
   try {
+    if (describeNonJsonCompatibleValue(schema)) {
+      return Number.POSITIVE_INFINITY;
+    }
     return Buffer.byteLength(JSON.stringify(schema), "utf-8");
   } catch {
     return Number.POSITIVE_INFINITY;

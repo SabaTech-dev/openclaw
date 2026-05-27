@@ -266,6 +266,58 @@ describe("config schema", () => {
     expect(lookup?.schema?.description).toContain("omitted");
   });
 
+  it("omits non-JSON-compatible plugin schemas before merging", () => {
+    for (const [name, marker] of [
+      ["function", () => true],
+      ["symbol", Symbol("fuzzplugin")],
+    ] as const) {
+      const res = buildConfigSchema({
+        cache: false,
+        plugins: [
+          {
+            id: `fuzzplugin-${name}`,
+            configSchema: {
+              type: "object",
+              properties: {
+                count: { type: "number", marker },
+              },
+            },
+          },
+        ],
+      });
+
+      const lookup = lookupConfigSchema(res, `plugins.entries.fuzzplugin-${name}.config`);
+      expect(lookup?.schema?.type).toBe("object");
+      expect(lookup?.schema?.additionalProperties).toBe(true);
+      expect(lookup?.schema?.description).toContain("omitted");
+    }
+  });
+
+  it("omits plugin schemas with throwing property reads", () => {
+    const configSchema = { type: "object" } as Record<string, unknown>;
+    Object.defineProperty(configSchema, "properties", {
+      enumerable: true,
+      get() {
+        throw new Error("fuzzplugin schema read failed");
+      },
+    });
+
+    const res = buildConfigSchema({
+      cache: false,
+      plugins: [
+        {
+          id: "fuzzplugin-throwing-schema",
+          configSchema,
+        },
+      ],
+    });
+
+    const lookup = lookupConfigSchema(res, "plugins.entries.fuzzplugin-throwing-schema.config");
+    expect(lookup?.schema?.type).toBe("object");
+    expect(lookup?.schema?.additionalProperties).toBe(true);
+    expect(lookup?.schema?.description).toContain("omitted");
+  });
+
   it("omits later plugin schemas after the aggregate extension schema budget is exhausted", () => {
     const res = buildConfigSchema({
       cache: false,
