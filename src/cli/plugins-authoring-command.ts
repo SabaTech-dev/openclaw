@@ -14,6 +14,7 @@ import {
 import { buildPluginLoaderAliasMap } from "../plugins/sdk-alias.js";
 import { defaultRuntime } from "../runtime.js";
 import { toSafeImportPath } from "../shared/import-specifier.js";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import { uniqueStrings } from "../shared/string-normalization.js";
 import { isRecord } from "../utils.js";
 
@@ -110,6 +111,31 @@ async function importToolPluginEntry(entryPath: string): Promise<unknown> {
   return typeof candidate === "function" ? (candidate as () => unknown)() : candidate;
 }
 
+function assertJsonCompatibleSchemaObject(value: unknown, owner: string): void {
+  if (!isRecord(value)) {
+    throw new Error(`${owner} must be a JSON-compatible schema object`);
+  }
+  const issue = describeNonJsonCompatibleValue(value, "schema");
+  if (issue) {
+    throw new Error(`${owner} must be a JSON-compatible schema object: ${issue}`);
+  }
+}
+
+function assertAuthoringToolPluginMetadata(metadata: ToolPluginMetadata): void {
+  assertJsonCompatibleSchemaObject(metadata.configSchema, "tool plugin metadata configSchema");
+  if (!Array.isArray(metadata.tools)) {
+    throw new Error("tool plugin metadata tools must be an array");
+  }
+  for (const tool of metadata.tools) {
+    const toolName =
+      isRecord(tool) && typeof tool.name === "string" && tool.name.trim() ? tool.name : "<unnamed>";
+    assertJsonCompatibleSchemaObject(
+      isRecord(tool) ? tool.parameters : undefined,
+      `tool plugin metadata tool ${toolName} parameters`,
+    );
+  }
+}
+
 export async function loadToolPlugin(params: {
   rootDir: string;
   entryPath: string;
@@ -129,6 +155,7 @@ export async function loadToolPlugin(params: {
       )}`,
     );
   }
+  assertAuthoringToolPluginMetadata(metadata);
   return { entry, metadata };
 }
 

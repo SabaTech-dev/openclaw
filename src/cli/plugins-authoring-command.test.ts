@@ -281,6 +281,45 @@ export default defineToolPlugin({
     expect(loaded.metadata.tools.map((tool) => tool.name)).toEqual(["source_echo"]);
   });
 
+  it("rejects forged tool plugin metadata with non-JSON-safe schemas", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-forged-"));
+    const sourceDir = path.join(tmpDir, "src");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceDir, "index.ts"),
+      `import { toolPluginMetadataSymbol } from "openclaw/plugin-sdk/tool-plugin";
+
+const cyclicParameters: any = { type: "object", properties: {} };
+cyclicParameters.properties.self = cyclicParameters;
+
+export default {
+  [toolPluginMetadataSymbol]: {
+    id: "fuzzplugin",
+    name: "Fuzz Plugin",
+    description: "Fuzz plugin.",
+    activation: { onStartup: true },
+    configSchema: { type: "object", properties: { limit: { default: 1n } } },
+    tools: [
+      {
+        name: "fuzz_move_angles",
+        label: "Fuzz Move Angles",
+        description: "Move with angle inputs.",
+        parameters: cyclicParameters,
+      },
+    ],
+  },
+};
+`,
+    );
+
+    await expect(
+      loadToolPlugin({
+        rootDir: tmpDir,
+        entryPath: path.join(sourceDir, "index.ts"),
+      }),
+    ).rejects.toThrow("tool plugin metadata configSchema must be a JSON-compatible schema object");
+  });
+
   it("scaffolds a dist-entry tool plugin project", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-init-"));
     const projectDir = path.join(tmpDir, "stock-quotes");
