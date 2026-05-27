@@ -42,6 +42,17 @@ function flattenUnionSchema(raw: Record<string, unknown>): Record<string, unknow
         }
         const existing = mergedProps[key];
         const incoming = schema;
+        if (existing === true || incoming === true) {
+          mergedProps[key] = true;
+          continue;
+        }
+        if (existing === false) {
+          mergedProps[key] = incoming;
+          continue;
+        }
+        if (incoming === false) {
+          continue;
+        }
         if (!isRecord(existing) || !isRecord(incoming)) {
           if (existing !== incoming) {
             logWarn(
