@@ -17,7 +17,6 @@ import {
 import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
 import { isRecord } from "../shared/record-coerce.js";
 import { normalizeStringEntries } from "../shared/string-normalization.js";
-import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../utils/message-channel.js";
 import type { AgentToolResult } from "./agent-core-contract.js";
 import { markBackgrounded, tail } from "./bash-process-registry.js";
 import {

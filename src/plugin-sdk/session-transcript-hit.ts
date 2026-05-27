@@ -69,7 +69,7 @@ function parseQmdSessionsPath(hitPath: string): SessionTranscriptHitIdentity | n
   if (!normalized.startsWith("qmd/") || !normalized.endsWith(".md")) {
     return null;
   }
-  const base = normalized.split("/").filter(Boolean).at(-1);
+  const base = normalized.split("/").findLast(Boolean);
   const mdStem = base?.slice(0, -".md".length);
   if (!mdStem) {
     return null;

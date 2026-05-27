@@ -33,10 +33,7 @@ import {
   hasVisibleAgentPayload,
 } from "./pi-embedded-runner/delivery-evidence.js";
 import type { EmbeddedPiQueueMessageOptions } from "./pi-embedded-runner/run-state.js";
-import type {
-  EmbeddedPiQueueFailureReason,
-  EmbeddedPiQueueMessageOutcome,
-} from "./pi-embedded-runner/runs.js";
+import type { EmbeddedPiQueueMessageOutcome } from "./pi-embedded-runner/runs.js";
 import {
   callGateway,
   createBoundDeliveryRouter,
@@ -854,8 +851,6 @@ async function sendSubagentAnnounceDirectly(params: {
       ? "message_tool_only"
       : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
-    let completionWakeFailureReason: EmbeddedPiQueueFailureReason | undefined;
-    let completionWakeRetriedWithoutTranscriptWait = false;
     const requesterQueueSettings = resolveQueueSettings({
       cfg,
       channel:

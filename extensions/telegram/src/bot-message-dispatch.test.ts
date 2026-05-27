@@ -63,16 +63,23 @@ const createChannelMessageReplyPipeline = vi.hoisted(() =>
 );
 const wasSentByBot = vi.hoisted(() => vi.fn(() => false));
 const appendSessionTranscriptMessage = vi.hoisted(() =>
-  vi.fn(async (_params: { message?: unknown }) => ({ messageId: "m1" })),
+  vi.fn(async (params: { message?: unknown }) => ({ messageId: "m1", message: params.message })),
 );
 const emitSessionTranscriptUpdate = vi.hoisted(() => vi.fn());
 const loadSessionStore = vi.hoisted(() => vi.fn());
+const getSessionEntry = vi.hoisted(() =>
+  vi.fn(({ sessionKey }: { sessionKey: string }) => {
+    const store = loadSessionStore() as Record<string, unknown> | undefined;
+    return store?.[sessionKey];
+  }),
+);
 const readLatestAssistantTextFromSessionTranscript = vi.hoisted(() => vi.fn());
-const resolveStorePath = vi.hoisted(() => vi.fn(() => "/tmp/sessions.json"));
+const resolveStorePath = vi.hoisted(() =>
+  vi.fn(() => "/tmp/openclaw-state/agents/default/sessions/sessions.json"),
+);
 const resolveAndPersistSessionFile = vi.hoisted(() =>
   vi.fn(async () => ({
-    sessionFile: "/tmp/session.jsonl",
-    sessionEntry: { sessionId: "s1", sessionFile: "/tmp/session.jsonl" },
+    sessionEntry: { sessionId: "s1" },
   })),
 );
 const generateTopicLabel = vi.hoisted(() => vi.fn());
@@ -172,6 +179,7 @@ let resetTelegramReplyFenceForTests: typeof import("./bot-message-dispatch.js").
 
 const telegramDepsForTest: TelegramBotDeps = {
   getRuntimeConfig: loadConfig as TelegramBotDeps["getRuntimeConfig"],
+  getSessionEntry: getSessionEntry as TelegramBotDeps["getSessionEntry"],
   resolveStorePath: resolveStorePath as TelegramBotDeps["resolveStorePath"],
   loadSessionStore: loadSessionStore as TelegramBotDeps["loadSessionStore"],
   readChannelAllowFromStore:
@@ -238,6 +246,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     emitSessionTranscriptUpdate.mockReset();
     readLatestAssistantTextFromSessionTranscript.mockReset();
     loadSessionStore.mockReset();
+    getSessionEntry.mockReset();
     resolveStorePath.mockReset();
     resolveAndPersistSessionFile.mockReset();
     generateTopicLabel.mockReset();
@@ -289,10 +298,13 @@ describe("dispatchTelegramMessage draft streaming", () => {
       onModelSelected: () => undefined,
     });
     wasSentByBot.mockReturnValue(false);
-    resolveStorePath.mockReturnValue("/tmp/sessions.json");
+    resolveStorePath.mockReturnValue("/tmp/openclaw-state/agents/default/sessions/sessions.json");
+    getSessionEntry.mockImplementation(({ sessionKey }: { sessionKey: string }) => {
+      const store = loadSessionStore() as Record<string, unknown> | undefined;
+      return store?.[sessionKey];
+    });
     resolveAndPersistSessionFile.mockResolvedValue({
-      sessionFile: "/tmp/session.jsonl",
-      sessionEntry: { sessionId: "s1", sessionFile: "/tmp/session.jsonl" },
+      sessionEntry: { sessionId: "s1" },
     });
     loadSessionStore.mockReturnValue({});
     generateTopicLabel.mockResolvedValue("Topic label");
@@ -1334,7 +1346,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
     await dispatchWithContext({ context });
 
     const transcriptCall = expectRecordFields(mockCallArg(appendSessionTranscriptMessage), {
-      transcriptPath: "/tmp/session.jsonl",
+      agentId: "default",
+      sessionId: "s1",
+      path: "/tmp/openclaw-state/agents/default/agent/openclaw-agent.sqlite",
     });
     expectRecordFields(transcriptCall.message, {
       role: "assistant",
@@ -1343,7 +1357,8 @@ describe("dispatchTelegramMessage draft streaming", () => {
       content: [{ type: "text", text: "Final answer" }],
     });
     expectRecordFields(mockCallArg(emitSessionTranscriptUpdate), {
-      sessionFile: "/tmp/session.jsonl",
+      agentId: "default",
+      sessionId: "s1",
       sessionKey: "agent:default:telegram:direct:123",
       messageId: "m1",
     });
@@ -1388,7 +1403,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(typeof mockCallArg(deliverReplies, 1).transcriptMirror).toBe("function");
     expect(appendSessionTranscriptMessage).toHaveBeenCalledTimes(1);
     const transcriptCall = expectRecordFields(mockCallArg(appendSessionTranscriptMessage), {
-      transcriptPath: "/tmp/session.jsonl",
+      agentId: "default",
+      sessionId: "s1",
+      path: "/tmp/openclaw-state/agents/default/agent/openclaw-agent.sqlite",
     });
     expectRecordFields(transcriptCall.message, {
       role: "assistant",
@@ -1430,7 +1447,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
       messageId: 2001,
     });
     const transcriptCall = expectRecordFields(mockCallArg(appendSessionTranscriptMessage), {
-      transcriptPath: "/tmp/session.jsonl",
+      agentId: "default",
+      sessionId: "s1",
+      path: "/tmp/openclaw-state/agents/default/agent/openclaw-agent.sqlite",
     });
     expectRecordFields(transcriptCall.message, {
       role: "assistant",
@@ -1462,7 +1481,8 @@ describe("dispatchTelegramMessage draft streaming", () => {
     await dispatchWithContext({ context });
 
     expectRecordFields(mockCallArg(emitSessionTranscriptUpdate), {
-      sessionFile: "/tmp/session.jsonl",
+      agentId: "default",
+      sessionId: "s1",
       sessionKey: "agent:default:telegram:direct:123",
       messageId: "m1",
       message: {

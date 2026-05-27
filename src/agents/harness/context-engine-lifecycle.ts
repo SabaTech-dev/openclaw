@@ -229,6 +229,8 @@ export async function runHarnessContextEngineMaintenance(params: {
   reason: "bootstrap" | "compaction" | "turn";
   runtimeContext?: ContextEngineRuntimeContext;
   executionMode?: "foreground" | "background";
+  onDeferredMaintenance?: (promise: Promise<void>) => void;
+  onDeferredMaintenanceFailure?: (error: unknown) => void;
   config?: OpenClawConfig;
 }) {
   return await runContextEngineMaintenance({
@@ -239,6 +241,8 @@ export async function runHarnessContextEngineMaintenance(params: {
     reason: params.reason,
     runtimeContext: params.runtimeContext,
     executionMode: params.executionMode,
+    onDeferredMaintenance: params.onDeferredMaintenance,
+    onDeferredMaintenanceFailure: params.onDeferredMaintenanceFailure,
     config: params.config,
   });
 }

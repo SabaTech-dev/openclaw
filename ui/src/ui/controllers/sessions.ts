@@ -244,6 +244,37 @@ function projectSessionsResultForAvailability(
   };
 }
 
+function appendSessionsResult(
+  previous: SessionsListResult,
+  page: SessionsListResult,
+): SessionsListResult {
+  const seen = new Set<string>();
+  const sessions: SessionsListResult["sessions"] = [];
+  for (const row of [...previous.sessions, ...page.sessions]) {
+    if (!row.key || seen.has(row.key)) {
+      continue;
+    }
+    seen.add(row.key);
+    sessions.push(row);
+  }
+  const totalCount = page.totalCount ?? previous.totalCount;
+  const hasMore =
+    page.hasMore ??
+    (typeof totalCount === "number" && Number.isFinite(totalCount)
+      ? sessions.length < totalCount
+      : false);
+  const nextOffset =
+    page.nextOffset !== undefined ? page.nextOffset : hasMore ? sessions.length : null;
+  return {
+    ...page,
+    count: sessions.length,
+    totalCount,
+    hasMore,
+    nextOffset,
+    sessions,
+  };
+}
+
 function compareSessionRowsByUpdatedAt(a: GatewaySessionRow, b: GatewaySessionRow): number {
   return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
 }

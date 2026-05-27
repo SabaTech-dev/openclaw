@@ -44,7 +44,6 @@ export async function stageQaMockAuthProfiles(params: {
   for (const agentId of agentIds) {
     await writeQaAuthProfiles({
       agentDir: resolveQaAgentAuthDir({ stateDir: params.stateDir, agentId }),
-      stateDir: params.stateDir,
       profiles: Object.fromEntries(
         providers.map((provider) => [
           buildQaMockProfileId(provider),

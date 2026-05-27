@@ -196,7 +196,7 @@ async function compactCodexNativeThread(
     });
   } catch (error) {
     if (isCodexThreadNotFoundError(error)) {
-      await clearCodexAppServerBinding(bindingIdentity, { config: params.config });
+      await clearCodexAppServerBinding(bindingIdentity);
       return failedCodexThreadBindingCompactionResult(params, {
         threadId: binding.threadId,
         reason: formatCompactionError(error),

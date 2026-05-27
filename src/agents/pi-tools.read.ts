@@ -213,7 +213,7 @@ function emptyReadResult(): AgentToolResult {
   return { content: [textBlock], details: undefined };
 }
 
-function missingDailyMemoryReadResult(relativePath: string): AgentToolResult<unknown> {
+function missingDailyMemoryReadResult(relativePath: string): AgentToolResult {
   return {
     content: [
       {

@@ -59,7 +59,6 @@ import {
   type DiagnosticEventPayload,
 } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { isToolAllowed } from "openclaw/plugin-sdk/sandbox";
-import { pathExists } from "openclaw/plugin-sdk/security-runtime";
 import { asBoolean } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { defaultCodexAppInventoryCache } from "./app-inventory-cache.js";
 import { handleCodexAppServerApprovalRequest } from "./approval-bridge.js";
@@ -935,7 +934,13 @@ async function rotateOversizedCodexAppServerStartupBinding(params: {
   if (!binding?.threadId) {
     return binding;
   }
-  if (params.config?.agents?.defaults?.compaction?.truncateAfterCompaction !== true) {
+  const compactionConfig = params.config?.agents?.defaults?.compaction as
+    | { rotateAfterCompaction?: boolean; truncateAfterCompaction?: boolean }
+    | undefined;
+  if (
+    compactionConfig?.rotateAfterCompaction !== true &&
+    compactionConfig?.truncateAfterCompaction !== true
+  ) {
     return binding;
   }
   const bindingIdentity = params.bindingIdentity ?? {

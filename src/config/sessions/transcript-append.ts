@@ -28,7 +28,7 @@ export async function appendSessionTranscriptMessage(params: {
   dedupeLatestAssistantText?: string;
   idempotencyLookup?: "scan" | "caller-checked";
   message: unknown;
-  prepareMessageAfterIdempotencyCheck?: (message: unknown) => unknown | undefined;
+  prepareMessageAfterIdempotencyCheck?: (message: unknown) => unknown;
   agentId: string;
   path?: string;
   now?: number;

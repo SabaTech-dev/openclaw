@@ -127,12 +127,12 @@ export function formatAccount(
 }
 
 function formatAccountAuthOverview(overview: CodexAccountAuthOverview): string {
-  const lines = [overview.headline];
-  if (overview.reason) {
-    lines.push(`Reason: ${overview.reason}`);
+  const lines = [overview.currentLine ?? "OpenAI credentials"];
+  if (overview.subscriptionLabel) {
+    lines.push(`Subscription: ${overview.subscriptionLabel}`);
   }
-  if (overview.usage) {
-    lines.push(`Usage: ${overview.usage}`);
+  if (overview.subscriptionUsage) {
+    lines.push(`Usage: ${overview.subscriptionUsage}`);
   }
   if (overview.rows.length > 0) {
     lines.push("", overview.orderTitle);

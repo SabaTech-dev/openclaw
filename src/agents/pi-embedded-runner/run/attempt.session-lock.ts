@@ -129,16 +129,16 @@ function installLockableFunction(params: {
 async function waitForSessionEventQueue(session: unknown): Promise<void> {
   const owner = session as SessionEventQueueOwner | null | undefined;
   for (let attempts = 0; attempts < 5; attempts += 1) {
-    const queue = owner?._agentEventQueue;
+    const queue = owner?.["_agentEventQueue"];
     if (!queue || typeof queue.then !== "function") {
       return;
     }
     await Promise.resolve(queue).catch(() => {});
-    if (owner?._agentEventQueue === queue) {
+    if (owner?.["_agentEventQueue"] === queue) {
       return;
     }
   }
-  const queue = owner?._agentEventQueue;
+  const queue = owner?.["_agentEventQueue"];
   if (queue && typeof queue.then === "function") {
     await Promise.resolve(queue).catch(() => {});
   }
@@ -154,22 +154,22 @@ function installAwaitableSessionEventQueue(session: unknown): void {
     return;
   }
   const canReconnect =
-    typeof owner._disconnectFromAgent === "function" &&
-    typeof owner._reconnectToAgent === "function";
+    typeof owner["_disconnectFromAgent"] === "function" &&
+    typeof owner["_reconnectToAgent"] === "function";
   if (canReconnect) {
-    owner._disconnectFromAgent?.();
+    owner["_disconnectFromAgent"]?.();
   }
   const wrapped: AwaitableSessionEventHandler = function awaitableHandleAgentEvent(
     ...args: [event: unknown, signal?: unknown]
   ) {
     const result = original(...args);
-    const queue = owner._agentEventQueue;
+    const queue = owner["_agentEventQueue"];
     return queue && typeof queue.then === "function" ? Promise.resolve(queue) : result;
   };
   wrapped["__openclawSessionEventQueueAwaitInstalled"] = true;
   owner["_handleAgentEvent"] = wrapped;
   if (canReconnect) {
-    owner._reconnectToAgent?.();
+    owner["_reconnectToAgent"]?.();
   }
 }
 
@@ -248,14 +248,14 @@ export function installSessionEventWriteLock(params: {
   installAwaitableSessionEventQueue(params.session);
   const session = params.session as SessionEventProcessor;
   if (
-    typeof session._processAgentEvent !== "function" ||
-    session.__openclawSessionEventWriteLockInstalled === true
+    typeof session["_processAgentEvent"] !== "function" ||
+    session["__openclawSessionEventWriteLockInstalled"] === true
   ) {
     return;
   }
-  const original = session._processAgentEvent;
-  session.__openclawSessionEventWriteLockInstalled = true;
-  session._processAgentEvent = async function lockedProcessAgentEvent(
+  const original = session["_processAgentEvent"];
+  session["__openclawSessionEventWriteLockInstalled"] = true;
+  session["_processAgentEvent"] = async function lockedProcessAgentEvent(
     this: unknown,
     event: unknown,
   ) {
@@ -377,8 +377,6 @@ export async function createEmbeddedAttemptSessionLockController(params: {
       const state: ActiveWriteLockState = { active: true };
       try {
         return await activeSessionLockState.run(state, async () => await run());
-      } catch (error) {
-        throw error;
       } finally {
         state.active = false;
         await writeLock?.release();
@@ -435,7 +433,7 @@ export function installPromptSubmissionLockRelease(params: {
   const currentStreamFn = session.agent?.streamFn;
   if (
     typeof currentStreamFn !== "function" ||
-    currentStreamFn.__openclawSessionLockPromptReleaseInstalled === true
+    currentStreamFn["__openclawSessionLockPromptReleaseInstalled"] === true
   ) {
     return;
   }
@@ -459,6 +457,6 @@ export function installPromptSubmissionLockRelease(params: {
       await params.reacquireAfterPrompt();
     }
   };
-  wrappedStreamFn.__openclawSessionLockPromptReleaseInstalled = true;
+  wrappedStreamFn["__openclawSessionLockPromptReleaseInstalled"] = true;
   session.agent!.streamFn = wrappedStreamFn;
 }

@@ -3669,7 +3669,6 @@ export async function runEmbeddedAttempt(
 
       let messagesSnapshot: AgentMessage[] = [];
       let sessionIdUsed = activeSession.sessionId;
-      let sessionFileUsed: string | undefined = params.sessionFile;
       if (params.abortSignal?.aborted === true) {
         onExternalAbortSignal();
         await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
@@ -3681,7 +3680,6 @@ export async function runEmbeddedAttempt(
       const activeSessionManager = sessionManager;
       let preflightRecovery: EmbeddedRunAttemptResult["preflightRecovery"];
       let promptErrorSource: EmbeddedRunAttemptResult["promptErrorSource"] = null;
-      let contextBudgetStatus: EmbeddedRunAttemptResult["contextBudgetStatus"];
       const handleMidTurnPrecheckRequest = async (request: MidTurnPrecheckRequest) => {
         const logMidTurnPrecheck = (route: string, extra?: string) => {
           log.warn(
@@ -5058,7 +5056,7 @@ export async function runEmbeddedAttempt(
         ),
         attemptUsage,
         promptCache,
-        contextBudgetStatus,
+        contextBudgetStatus: undefined,
         compactionCount: getCompactionCount(),
         compactionTokensAfter: getLastCompactionTokensAfter(),
         // Client tool calls detected (OpenResponses hosted tools).

@@ -651,7 +651,7 @@ describe("install-cli.sh", () => {
     }
   });
 
-  it("rejects downloaded generic Node runtimes below the runtime floor", () => {
+  it("rejects requested generic Node runtimes below the runtime floor", () => {
     const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-cli-generic-old-node-"));
     const prefix = join(tmp, "prefix");
     const newNode = join(tmp, "new-node");
@@ -716,9 +716,9 @@ describe("install-cli.sh", () => {
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain(
-        "Installed Node 22.18.0 must provide Node >= 22.19.0 with node:sqlite",
+        "OpenClaw requires Node 22.19.0 or newer; got --node-version 22.18.0",
       );
-      expect(result.stdout).toContain("found v22.18.0");
+      expect(result.stdout).not.toContain("Installing Node 22.18.0");
     } finally {
       rmSync(tmp, { force: true, recursive: true });
     }

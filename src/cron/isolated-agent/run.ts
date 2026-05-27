@@ -458,6 +458,7 @@ type PreparedCronRunContext = {
   workspaceDir: string;
   commandBody: string;
   cronSession: MutableCronSession;
+  currentRunSessionId: () => string;
   persistSessionEntry: PersistCronSessionEntry;
   withRunSession: WithRunSession;
   agentPayload: Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
@@ -595,6 +596,7 @@ async function prepareCronRunContext(params: {
     sessionId: cronSession.sessionEntry.sessionId ?? runSessionId,
     sessionKey: runSessionKey,
   });
+  const currentRunSessionId = () => cronSession.sessionEntry.sessionId ?? runSessionId;
   if (!cronSession.sessionEntry.label?.trim() && baseSessionKey.startsWith("cron:")) {
     const labelSuffix =
       typeof input.job.name === "string" && input.job.name.trim()
@@ -833,6 +835,7 @@ async function prepareCronRunContext(params: {
       workspaceDir,
       commandBody,
       cronSession,
+      currentRunSessionId,
       persistSessionEntry,
       withRunSession,
       agentPayload,

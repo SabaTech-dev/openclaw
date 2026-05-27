@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { requireNodeSqlite } from "../../src/infra/node-sqlite.js";
 
 const ASSERTIONS_SCRIPT = "scripts/e2e/lib/kitchen-sink-plugin/assertions.mjs";
 const REQUIRED_FULL_DIAGNOSTIC_CANARIES = [
@@ -16,6 +17,65 @@ const REQUIRED_FULL_DIAGNOSTIC_CANARIES = [
 function writeJson(filePath: string, value: unknown) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeInstalledPluginIndex(stateDir: string, installRecords: unknown) {
+  const sqlite = requireNodeSqlite();
+  const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new sqlite.DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE installed_plugin_index (
+        index_key TEXT NOT NULL PRIMARY KEY,
+        version INTEGER NOT NULL,
+        host_contract_version TEXT NOT NULL,
+        compat_registry_version TEXT NOT NULL,
+        migration_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        generated_at_ms INTEGER NOT NULL,
+        refresh_reason TEXT,
+        install_records_json TEXT NOT NULL,
+        plugins_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        warning TEXT,
+        updated_at_ms INTEGER NOT NULL
+      )
+    `);
+    db.prepare(
+      `INSERT INTO installed_plugin_index (
+        index_key,
+        version,
+        host_contract_version,
+        compat_registry_version,
+        migration_version,
+        policy_hash,
+        generated_at_ms,
+        refresh_reason,
+        install_records_json,
+        plugins_json,
+        diagnostics_json,
+        warning,
+        updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "current",
+      1,
+      "test",
+      "test",
+      1,
+      "test",
+      1,
+      null,
+      JSON.stringify(installRecords),
+      "[]",
+      "[]",
+      null,
+      1,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 function fullSurfaceInspectPayload(pluginId: string) {
@@ -67,7 +127,6 @@ function runAssertInstalled({
   const inspectJsonPath = path.join(scratchRoot, `kitchen-sink-${label}-inspect.json`);
   const inspectAllJsonPath = path.join(scratchRoot, `kitchen-sink-${label}-inspect-all.json`);
   const installPathMarker = path.join(scratchRoot, `kitchen-sink-${label}-install-path.txt`);
-  const installsPath = path.join(home, ".openclaw", "plugins", "installs.json");
   const spawnEnv = { ...process.env };
   delete spawnEnv.KITCHEN_SINK_REQUIRE_ALL_DIAGNOSTICS;
 
@@ -78,15 +137,13 @@ function runAssertInstalled({
     });
     writeJson(inspectJsonPath, fullSurfaceInspectPayload(pluginId));
     writeJson(inspectAllJsonPath, { diagnostics: [] });
-    writeJson(installsPath, {
-      installRecords: {
-        [pluginId]: {
-          installPath,
-          resolvedSpec: "@openclaw/kitchen-sink@latest",
-          resolvedVersion: "1.0.0",
-          source: "npm",
-          spec: "@openclaw/kitchen-sink@latest",
-        },
+    writeInstalledPluginIndex(path.join(home, ".openclaw"), {
+      [pluginId]: {
+        installPath,
+        resolvedSpec: "@openclaw/kitchen-sink@latest",
+        resolvedVersion: "1.0.0",
+        source: "npm",
+        spec: "@openclaw/kitchen-sink@latest",
       },
     });
 

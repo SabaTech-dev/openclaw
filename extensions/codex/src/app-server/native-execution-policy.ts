@@ -38,10 +38,11 @@ export function resolveCodexNativeExecutionPolicy(params: {
 }): CodexNativeExecutionPolicy {
   const config = params.config ?? {};
   const sessionKey = params.sessionKey?.trim() || params.sessionId?.trim() || undefined;
+  const agentId = resolvePolicyAgentId({ config, sessionKey, agentId: params.agentId });
   const sessionEntry =
     params.sessionEntry ??
     (params.readRuntimeSessionEntry && sessionKey
-      ? readRuntimeSessionEntryBestEffort(sessionKey)
+      ? readRuntimeSessionEntryBestEffort({ agentId, sessionKey })
       : undefined);
   const sandboxAvailable =
     params.sandboxAvailable ??
@@ -51,7 +52,6 @@ export function resolveCodexNativeExecutionPolicy(params: {
           sessionKey,
         }).sandboxed
       : false);
-  const agentId = resolvePolicyAgentId({ config, sessionKey, agentId: params.agentId });
   const agentExec = resolvePolicyAgentExec({ config, agentId });
   const globalExec = config.tools?.exec;
   const requestedExecHost =
@@ -187,9 +187,12 @@ function resolveEffectiveExecHost(params: {
   return params.requestedExecHost;
 }
 
-function readRuntimeSessionEntryBestEffort(sessionKey: string): SessionEntry | undefined {
+function readRuntimeSessionEntryBestEffort(params: {
+  agentId: string;
+  sessionKey: string;
+}): SessionEntry | undefined {
   try {
-    return getSessionEntry({ sessionKey });
+    return getSessionEntry(params);
   } catch {
     return undefined;
   }

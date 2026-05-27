@@ -58,6 +58,7 @@ import {
   logVerbose,
   sleepWithAbort,
 } from "openclaw/plugin-sdk/runtime-env";
+import { resolveOpenClawAgentSqlitePath } from "openclaw/plugin-sdk/sqlite-runtime";
 import { resolveTelegramConfigReasoningDefault } from "./agent-config.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { normalizeAllowFrom } from "./bot-access.js";
@@ -80,7 +81,6 @@ import {
   resolveAutoTopicLabelConfig,
   resolveChunkMode,
   resolveMarkdownTableMode,
-  resolveAndPersistSessionFile,
   resolveStorePath,
   resolveSessionStoreEntry,
 } from "./bot-message-dispatch.runtime.js";
@@ -273,14 +273,38 @@ function createFreshTelegramSessionStoreLoader(params: {
     if (cachedStore) {
       return { storePath, store: cachedStore };
     }
-    const store = (params.telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
-      skipCache: true,
-    });
+    const store = (params.telegramDeps.loadSessionStore ?? loadSessionStore)(storePath);
     storesByPath.set(storePath, store);
     return { storePath, store };
   }) as FreshTelegramSessionStoreLoader;
   load.clear = () => storesByPath.clear();
   return load;
+}
+
+function resolveTelegramSessionDatabasePathFromStorePath(params: {
+  storePath: string;
+  agentId: string;
+}): string | undefined {
+  const resolved = path.resolve(params.storePath);
+  if (path.basename(resolved) !== "sessions.json") {
+    return undefined;
+  }
+  const sessionsDir = path.dirname(resolved);
+  if (path.basename(sessionsDir) !== "sessions") {
+    return undefined;
+  }
+  const agentDir = path.dirname(sessionsDir);
+  const agentsDir = path.dirname(agentDir);
+  if (path.basename(agentsDir) !== "agents") {
+    return undefined;
+  }
+  return resolveOpenClawAgentSqlitePath({
+    agentId: params.agentId,
+    env: {
+      ...process.env,
+      OPENCLAW_STATE_DIR: path.dirname(agentsDir),
+    },
+  });
 }
 
 function resolveTelegramReasoningLevel(params: {
@@ -350,15 +374,6 @@ async function mirrorTelegramAssistantReplyToTranscript(params: {
   if (!sessionEntry?.sessionId) {
     return;
   }
-  const { sessionFile } = await resolveAndPersistSessionFile({
-    sessionId: sessionEntry.sessionId,
-    sessionKey: params.sessionKey,
-    sessionStore: store,
-    storePath,
-    sessionEntry,
-    agentId: params.route.agentId,
-    sessionsDir: path.dirname(storePath),
-  });
   const message = {
     role: "assistant" as const,
     content: [{ type: "text" as const, text }],
@@ -383,13 +398,23 @@ async function mirrorTelegramAssistantReplyToTranscript(params: {
     stopReason: "stop" as const,
     timestamp: Date.now(),
   };
-  const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
-    transcriptPath: sessionFile,
+  const appended = await appendSessionTranscriptMessage({
+    agentId: params.route.agentId,
+    sessionId: sessionEntry.sessionId,
+    path: resolveTelegramSessionDatabasePathFromStorePath({
+      storePath,
+      agentId: params.route.agentId,
+    }),
     message,
     config: params.cfg,
   });
+  if (!appended) {
+    return;
+  }
+  const { messageId, message: appendedMessage } = appended;
   emitSessionTranscriptUpdate({
-    sessionFile,
+    agentId: params.route.agentId,
+    sessionId: sessionEntry.sessionId,
     sessionKey: params.sessionKey,
     message: appendedMessage,
     messageId,
@@ -1638,7 +1663,6 @@ export const dispatchTelegramMessage = async ({
             channel: "telegram",
             accountId: route.accountId,
             routeSessionKey: route.sessionKey,
-            storePath: dispatchContext.turn.storePath,
             ctxPayload,
             recordInboundSession: dispatchContext.turn.recordInboundSession,
             record: dispatchContext.turn.record,

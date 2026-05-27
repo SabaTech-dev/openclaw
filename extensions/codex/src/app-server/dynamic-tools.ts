@@ -561,7 +561,7 @@ function isToolResultYield(result: AgentToolResult): boolean {
   return details.status.trim().toLowerCase() === "yielded";
 }
 
-function isAsyncStartedToolResult(result: AgentToolResult<unknown>): boolean {
+function isAsyncStartedToolResult(result: AgentToolResult): boolean {
   const details = result.details;
   return isRecord(details) && details.async === true && details.status === "started";
 }

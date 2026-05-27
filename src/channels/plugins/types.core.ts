@@ -231,6 +231,7 @@ export type ChannelMeta = {
   quickstartAllowFrom?: boolean;
   forceAccountBinding?: boolean;
   preferOver?: readonly string[];
+  preferSessionLookupForAnnounceTarget?: boolean;
 };
 
 /** Snapshot row returned by channel status and lifecycle surfaces. */

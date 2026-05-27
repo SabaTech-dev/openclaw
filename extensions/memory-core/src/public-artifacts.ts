@@ -94,5 +94,13 @@ async function collectWorkspaceArtifacts(params: {
 export async function listMemoryCorePublicArtifacts(params: {
   cfg: OpenClawConfig;
 }): Promise<MemoryPluginPublicArtifact[]> {
-  return await listMemoryHostPublicArtifacts(params);
+  const artifacts = await Promise.all(
+    resolveMemoryDreamingWorkspaces(params.cfg).map((workspace) =>
+      collectWorkspaceArtifacts({
+        workspaceDir: workspace.workspaceDir,
+        agentIds: workspace.agentIds,
+      }),
+    ),
+  );
+  return artifacts.flat();
 }

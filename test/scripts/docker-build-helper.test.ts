@@ -63,6 +63,7 @@ const PLUGIN_UPDATE_SCENARIO_PATH = "scripts/e2e/lib/plugin-update/unchanged-sce
 const PLUGIN_UPDATE_CORRUPT_SCENARIO_PATH =
   "scripts/e2e/lib/plugin-update/corrupt-update-scenario.sh";
 const PLUGIN_UPDATE_PROBE_PATH = "scripts/e2e/lib/plugin-update/probe.mjs";
+const INSTALLED_PLUGIN_INDEX_PATH = "scripts/e2e/lib/installed-plugin-index.mjs";
 const PLUGIN_LIFECYCLE_MATRIX_DOCKER_E2E_PATH = "scripts/e2e/plugin-lifecycle-matrix-docker.sh";
 const DOCTOR_SWITCH_DOCKER_E2E_PATH = "scripts/e2e/doctor-install-switch-docker.sh";
 const DOCTOR_SWITCH_SCENARIO_PATH = "scripts/e2e/lib/doctor-install-switch/scenario.sh";
@@ -1407,10 +1408,12 @@ test -f "$TMPDIR/docker-cmd-seen"
     const runner = readFileSync(PLUGIN_UPDATE_DOCKER_E2E_PATH, "utf8");
     const scenario = readFileSync(PLUGIN_UPDATE_SCENARIO_PATH, "utf8");
     const probe = readFileSync(PLUGIN_UPDATE_PROBE_PATH, "utf8");
+    const installedPluginIndex = readFileSync(INSTALLED_PLUGIN_INDEX_PATH, "utf8");
 
     expect(runner).toContain("scripts/e2e/lib/plugin-update/unchanged-scenario.sh");
     expect(probe).toContain("plugin install record changed unexpectedly");
-    expect(probe).toContain("index.installRecords ?? index.records ?? config.plugins?.installs");
+    expect(probe).toContain("readInstalledPluginRecords()");
+    expect(installedPluginIndex).toContain("index.installRecords ?? index.records ?? {}");
     expect(scenario).toContain("Config changed unexpectedly for modern package");
     expect(scenario).not.toContain("before_hash");
   });

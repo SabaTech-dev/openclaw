@@ -81,6 +81,7 @@ export type IMessageCatchupSummary = {
    * so the cursor can advance past them.
    */
   skippedGivenUp: number;
+  fullyCaughtUp?: boolean;
   failed: number;
   /**
    * Messages that crossed the `maxFailureRetries` ceiling on this run. Each
@@ -243,6 +244,7 @@ export type CatchupFetchFn = (params: {
   highWatermarkRowid?: number;
   /** Companion to `highWatermarkRowid` — highest `date` seen in the raw response. */
   highWatermarkMs?: number;
+  fullyCaughtUp?: boolean;
 }>;
 
 export type CatchupDispatchFn = (row: IMessageCatchupRow) => Promise<{ ok: boolean }>;
@@ -317,6 +319,7 @@ export async function performIMessageCatchup(
     skippedFromMe: 0,
     skippedPreCursor: 0,
     skippedGivenUp: 0,
+    fullyCaughtUp: false,
     failed: 0,
     givenUp: 0,
     cursorBefore: cursor
@@ -347,6 +350,7 @@ export async function performIMessageCatchup(
   }
   summary.querySucceeded = true;
   summary.fetchedCount = fetchResult.rows.length;
+  summary.fullyCaughtUp = fetchResult.fullyCaughtUp === true;
 
   // Stable order: process oldest-first so the cursor advances monotonically
   // and a mid-run failure leaves a usable lastSeenRowid for the next pass.

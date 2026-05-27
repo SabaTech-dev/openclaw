@@ -9,7 +9,6 @@ import {
   sanitizeTransportPayloadText,
   testing,
 } from "./openai-transport-stream.js";
-import type { Model } from "./pi-ai-contract.js";
 import type { Api, Model } from "./pi-ai-contract.js";
 import { attachModelProviderRequestTransport } from "./provider-request-config.js";
 import {

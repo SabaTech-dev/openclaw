@@ -3,12 +3,72 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { requireNodeSqlite } from "../../src/infra/node-sqlite.js";
 
 const ASSERTIONS_SCRIPT = "scripts/e2e/lib/plugins/assertions.mjs";
 
 function writeJson(filePath: string, value: unknown) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function writeInstalledPluginIndex(stateDir: string, installRecords: unknown) {
+  const sqlite = requireNodeSqlite();
+  const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new sqlite.DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE installed_plugin_index (
+        index_key TEXT NOT NULL PRIMARY KEY,
+        version INTEGER NOT NULL,
+        host_contract_version TEXT NOT NULL,
+        compat_registry_version TEXT NOT NULL,
+        migration_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        generated_at_ms INTEGER NOT NULL,
+        refresh_reason TEXT,
+        install_records_json TEXT NOT NULL,
+        plugins_json TEXT NOT NULL,
+        diagnostics_json TEXT NOT NULL,
+        warning TEXT,
+        updated_at_ms INTEGER NOT NULL
+      )
+    `);
+    db.prepare(
+      `INSERT INTO installed_plugin_index (
+        index_key,
+        version,
+        host_contract_version,
+        compat_registry_version,
+        migration_version,
+        policy_hash,
+        generated_at_ms,
+        refresh_reason,
+        install_records_json,
+        plugins_json,
+        diagnostics_json,
+        warning,
+        updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "current",
+      1,
+      "test",
+      "test",
+      1,
+      "test",
+      1,
+      null,
+      JSON.stringify(installRecords),
+      "[]",
+      "[]",
+      null,
+      1,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 describe("plugins Docker assertions", () => {
@@ -42,12 +102,10 @@ describe("plugins Docker assertions", () => {
       writeJson(path.join(scratchRoot, "plugins2-inspect.json"), {
         gatewayMethods: ["demo.tgz"],
       });
-      writeJson(path.join(home, ".openclaw", "plugins", "installs.json"), {
-        installRecords: {
-          "demo-plugin-tgz": {
-            source: "archive",
-            installPath: String.raw`~\managed-plugin`,
-          },
+      writeInstalledPluginIndex(path.join(home, ".openclaw"), {
+        "demo-plugin-tgz": {
+          source: "archive",
+          installPath: String.raw`~\managed-plugin`,
         },
       });
 
@@ -84,13 +142,11 @@ describe("plugins Docker assertions", () => {
       writeJson(path.join(scratchRoot, "plugins3-inspect.json"), {
         gatewayMethods: ["demo.dir"],
       });
-      writeJson(path.join(home, ".openclaw", "plugins", "installs.json"), {
-        installRecords: {
-          "demo-plugin-dir": {
-            source: "path",
-            sourcePath: normalizedSourcePath,
-            installPath,
-          },
+      writeInstalledPluginIndex(path.join(home, ".openclaw"), {
+        "demo-plugin-dir": {
+          source: "path",
+          sourcePath: normalizedSourcePath,
+          installPath,
         },
       });
 
@@ -119,9 +175,7 @@ describe("plugins Docker assertions", () => {
     try {
       writeJson(path.join(scratchRoot, "plugins2-uninstalled.json"), { plugins: [] });
       writeFileSync(path.join(scratchRoot, "plugins2-install-path.txt"), installPath, "utf8");
-      writeJson(path.join(home, ".openclaw", "plugins", "installs.json"), {
-        installRecords: {},
-      });
+      writeInstalledPluginIndex(path.join(home, ".openclaw"), {});
 
       const result = spawnSync(process.execPath, [ASSERTIONS_SCRIPT, "plugin-tgz-removed"], {
         encoding: "utf8",

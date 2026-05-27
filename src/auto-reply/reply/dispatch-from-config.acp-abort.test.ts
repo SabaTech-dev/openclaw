@@ -522,10 +522,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       const existing =
         params.entries && params.sessionKey ? params.entries[params.sessionKey] : undefined;
       return {
-        existing:
-          existing && typeof existing === "object"
-            ? (existing as Record<string, unknown>)
-            : undefined,
+        existing: existing && typeof existing === "object" ? existing : undefined,
       };
     });
     acpMocks.readAcpSessionEntry.mockImplementation((params: { sessionKey: string }) =>

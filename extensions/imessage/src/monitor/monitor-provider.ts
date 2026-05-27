@@ -635,6 +635,8 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
             replyContext: null,
             effectiveWasMentioned: true,
             commandAuthorized: false,
+            hasControlCommand: false,
+            historyKey: undefined,
           } satisfies Extract<
             Awaited<ReturnType<typeof resolveIMessageInboundDecision>>,
             { kind: "dispatch" }
@@ -1087,7 +1089,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         runtime,
       });
       liveCatchupCursorAdvanceEnabled =
-        catchupSummary.querySucceeded && catchupSummary.fullyCaughtUp;
+        catchupSummary.querySucceeded && catchupSummary.fullyCaughtUp === true;
       if (liveCatchupCursorAdvanceEnabled) {
         await flushPendingLiveCatchupCursorAdvances();
       } else {

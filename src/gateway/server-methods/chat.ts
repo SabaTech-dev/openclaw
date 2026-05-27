@@ -64,7 +64,6 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import { asOptionalRecord } from "../../shared/record-coerce.js";
 import { uniqueStrings } from "../../shared/string-normalization.js";
-import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import {
   stripInlineDirectiveTagsForDisplay,
   sanitizeReplyDirectiveId,

@@ -9,11 +9,6 @@ import {
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import {
-  isRecord,
-  normalizeOptionalString as readNonEmptyString,
-} from "openclaw/plugin-sdk/string-coerce-runtime";
-import { scanDirectReplyTranscriptSentinels } from "./gateway-log-sentinel.js";
 import { liveTurnTimeoutMs } from "./suite-runtime-agent-common.js";
 import type {
   QaRawSessionEntry,
@@ -35,65 +30,6 @@ function isSessionStoreLockTimeout(error: unknown) {
     text.includes("SessionWriteLockTimeoutError") ||
     text.includes("session file locked")
   );
-}
-
-function extractSessionTranscriptText(message: Record<string, unknown>) {
-  const rawContent = message.content;
-  if (typeof rawContent === "string") {
-    return rawContent.trim();
-  }
-  if (!Array.isArray(rawContent)) {
-    return "";
-  }
-  const parts: string[] = [];
-  for (const block of rawContent) {
-    if (typeof block === "string") {
-      if (block.trim()) {
-        parts.push(block.trim());
-      }
-      continue;
-    }
-    if (!isRecord(block)) {
-      continue;
-    }
-    const text = readNonEmptyString(block.text);
-    if (text) {
-      parts.push(text);
-      continue;
-    }
-    const content = readNonEmptyString(block.content);
-    if (
-      content &&
-      (block.type === "output_text" || block.type === "text" || block.type === "message")
-    ) {
-      parts.push(content);
-    }
-  }
-  return parts.join("\n").trim();
-}
-
-function extractFinalAssistantTextFromTranscript(transcriptBytes: string) {
-  let finalText = "";
-  for (const line of transcriptBytes.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      const message = isRecord(parsed) && isRecord(parsed.message) ? parsed.message : undefined;
-      if (!message || message.role !== "assistant") {
-        continue;
-      }
-      const text = extractSessionTranscriptText(message);
-      if (text) {
-        finalText = text;
-      }
-    } catch {
-      // Ignore malformed transcript rows and keep QA summary checks deterministic.
-    }
-  }
-  return finalText;
 }
 
 async function callGatewayWithSessionStoreLockRetry<T>(

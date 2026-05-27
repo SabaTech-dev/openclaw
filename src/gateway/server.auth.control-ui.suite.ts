@@ -1225,7 +1225,7 @@ export function registerControlUiAndPairingSuite(): void {
     const { PAIRING_SETUP_BOOTSTRAP_PROFILE } =
       await import("../shared/device-bootstrap-profile.js");
     const { server, port, prevToken } = await startControlUiServer("secret");
-    const { identityPath, identity } = await createOperatorIdentityFixture(
+    const { identityKey, identity } = await createOperatorIdentityFixture(
       "openclaw-bootstrap-node-retry-",
     );
     const client = {
@@ -1264,7 +1264,7 @@ export function registerControlUiAndPairingSuite(): void {
         role: "node",
         scopes: [],
         client,
-        deviceIdentityPath: identityPath,
+        deviceIdentityKey: identityKey,
       });
       expect(retry.ok).toBe(true);
       const payload = retry.payload as

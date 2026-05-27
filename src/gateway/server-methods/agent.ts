@@ -17,10 +17,6 @@ import {
 } from "../../agents/identity-avatar.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
-import {
-  normalizeAgentRunTimeoutPhase,
-  normalizeProviderStarted,
-} from "../../agents/run-timeout-attribution.js";
 import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import {
   normalizeSpawnedRunMetadata,
@@ -102,7 +98,6 @@ import {
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import {
   registerChatAbortController,
   resolveAgentRunExpiresAtMs,
@@ -524,41 +519,6 @@ function setGatewayDedupeEntries(params: {
   }
 }
 
-function setAbortedAgentDedupeEntries(params: {
-  dedupe: GatewayRequestContext["dedupe"];
-  keys: readonly string[];
-  runId: string;
-  stopReason: string;
-}) {
-  setGatewayDedupeEntries({
-    dedupe: params.dedupe,
-    keys: params.keys,
-    entry: {
-      ts: Date.now(),
-      ok: true,
-      payload: {
-        runId: params.runId,
-        status: "timeout" as const,
-        summary: "aborted",
-        stopReason: params.stopReason,
-        timeoutPhase: "queue",
-        providerStarted: false,
-      },
-    },
-  });
-}
-
-function readAgentRunTimeoutAttribution(meta: unknown) {
-  const record =
-    meta && typeof meta === "object" && !Array.isArray(meta)
-      ? (meta as Record<string, unknown>)
-      : undefined;
-  return {
-    timeoutPhase: normalizeAgentRunTimeoutPhase(record?.timeoutPhase),
-    providerStarted: normalizeProviderStarted(record?.providerStarted),
-  };
-}
-
 function isGatewayAbortSignalReason(reason: unknown): boolean {
   return reason === undefined || isAbortError(reason) || readErrorName(reason) === "TimeoutError";
 }
@@ -580,9 +540,6 @@ function resolveGatewayAgentAbortStopReason(signal: AbortSignal): "rpc" | "timeo
   return readErrorName(signal.reason) === "TimeoutError" ? "timeout" : "rpc";
 }
 
-function resolveAbortedAgentStopReason(entry?: ChatAbortControllerEntry): string {
-  return entry?.abortStopReason?.trim() || "rpc";
-}
 function deleteGatewayDedupeEntries(params: {
   dedupe: GatewayRequestContext["dedupe"];
   keys: readonly string[];
@@ -769,22 +726,6 @@ function failedSessionTranscriptExists(params: {
     entry: params.entry,
     sessionsDir: resolveLegacySessionsDirFromDatabasePath(params.databasePath),
   });
-}
-
-function resetSessionRunStateForFreshSession(
-  entry: SessionEntry | undefined,
-): SessionEntry | undefined {
-  if (!entry) {
-    return undefined;
-  }
-  const next = { ...entry };
-  delete next.status;
-  delete next.startedAt;
-  delete next.endedAt;
-  delete next.runtimeMs;
-  delete next.abortedLastRun;
-  delete next.sessionFile;
-  return next;
 }
 
 export const agentHandlers: GatewayRequestHandlers = {
@@ -974,71 +915,6 @@ export const agentHandlers: GatewayRequestHandlers = {
     const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(request.attachments);
     const requestedBestEffortDeliver =
       typeof request.bestEffortDeliver === "boolean" ? request.bestEffortDeliver : undefined;
-
-    let message = (request.message ?? "").trim();
-    if (!isRawModelRun) {
-      message = annotateInterSessionPromptText(message, inputProvenance);
-    }
-    let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
-    let imageOrder: PromptImageOrderEntry[] = [];
-    if (normalizedAttachments.length > 0) {
-      const requestedSessionKeyRaw =
-        typeof request.sessionKey === "string" && request.sessionKey.trim()
-          ? request.sessionKey.trim()
-          : undefined;
-
-      let baseProvider: string | undefined;
-      let baseModel: string | undefined;
-      if (requestedSessionKeyRaw) {
-        const {
-          cfg: sessCfg,
-          entry: sessEntry,
-          agentId: sessionAgentId,
-        } = loadSessionEntry(requestedSessionKeyRaw);
-        const modelRef = resolveSessionModelRef(sessCfg, sessEntry, sessionAgentId);
-        baseProvider = modelRef.provider;
-        baseModel = modelRef.model;
-      }
-      const effectiveProvider = providerOverride || baseProvider;
-      const effectiveModel = modelOverride || baseModel;
-      const supportsInlineImages = await resolveGatewayModelSupportsImages({
-        loadGatewayModelCatalog: context.loadGatewayModelCatalog,
-        provider: effectiveProvider,
-        model: effectiveModel,
-      });
-
-      try {
-        const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
-          maxBytes: resolveChatAttachmentMaxBytes(cfg),
-          log: context.logGateway,
-          supportsInlineImages,
-          // agent.run does not yet wire a ctx.MediaPaths stage path, so reject
-          // non-image attachments explicitly (UnsupportedAttachmentError)
-          // instead of saving them where the agent cannot reach them.
-          acceptNonImage: false,
-        });
-        message = parsed.message.trim();
-        images = parsed.images;
-        imageOrder = parsed.imageOrder;
-        // offloadedRefs are appended as text markers to `message`; the agent
-        // runner will resolve them via detectAndLoadPromptImages.
-      } catch (err) {
-        // MediaOffloadError indicates a server-side storage fault (ENOSPC, EPERM,
-        // etc.). Map it to UNAVAILABLE so clients can retry without treating it as
-        // a bad request. All other errors are input-validation failures → 4xx.
-        logAttachmentFailure(context.logGateway, "agent attachment parse failed", err);
-        const isServerFault = err instanceof MediaOffloadError;
-        respond(
-          false,
-          undefined,
-          errorShape(
-            isServerFault ? ErrorCodes.UNAVAILABLE : ErrorCodes.INVALID_REQUEST,
-            String(err),
-          ),
-        );
-        return;
-      }
-    }
 
     // Accept internal non-delivery sources (heartbeat, cron, webhook) as valid
     // channel hints so subagent spawns from those parent runs are not rejected.
@@ -1423,11 +1299,6 @@ export const agentHandlers: GatewayRequestHandlers = {
           request.bootstrapContextRunKind !== "cron" &&
           request.bootstrapContextRunKind !== "heartbeat" &&
           !request.internalEvents?.length;
-        const labelValue = normalizeOptionalString(request.label) || entry?.label;
-        const pluginOwnerId =
-          entry === undefined
-            ? normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId)
-            : normalizeOptionalString(entry.pluginOwnerId);
         const sessionAgent = resolveAgentIdFromSessionKey(canonicalKey);
         const rotatedSessionId = Boolean(entry?.sessionId && entry.sessionId !== sessionId);
         type AgentSessionPatchBuild = {

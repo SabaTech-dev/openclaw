@@ -557,7 +557,7 @@ export function inspectFeishuDoctorState(params: {
   const sessionEntries: FeishuDoctorInspection["sessionEntries"] = [];
 
   for (const target of collectFeishuSessionTargets({ cfg: params.cfg, env, stateDir })) {
-    const store = loadSessionStore(target.storePath, { skipCache: true });
+    const store = loadSessionStore(target.storePath);
     for (const [key, entry] of Object.entries(store).toSorted(([left], [right]) =>
       left.localeCompare(right),
     )) {

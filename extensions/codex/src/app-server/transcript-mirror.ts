@@ -206,7 +206,7 @@ export async function mirrorCodexAppServerTranscript(params: {
           }
         : nextMessage
     ) as AgentMessage;
-    const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
+    const appended = await appendSessionTranscriptMessage({
       agentId,
       ...(params.path ? { path: params.path } : {}),
       sessionId,
@@ -214,6 +214,11 @@ export async function mirrorCodexAppServerTranscript(params: {
       idempotencyLookup: idempotencyKey ? "caller-checked" : "scan",
       config: params.config,
     });
+    if (!appended) {
+      continue;
+    }
+    const { messageId } = appended;
+    const appendedMessage = appended.message as AgentMessage;
     if (appendedMessage.role === "user") {
       userMessagesPresent.push(appendedMessage);
       if (idempotencyKey) {
