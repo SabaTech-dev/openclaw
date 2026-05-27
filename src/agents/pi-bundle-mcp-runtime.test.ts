@@ -359,6 +359,32 @@ describe("session MCP runtime", () => {
     }
   });
 
+  it("rejects non-JSON-compatible draft-2020-12 schemas before recursive validation", () => {
+    const cyclicSchema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema";
+      type: "object";
+      properties: Record<string, unknown>;
+    } = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {},
+    };
+    cyclicSchema.properties.self = cyclicSchema;
+
+    expect(() => createBundleMcpJsonSchemaValidator().getValidator(cyclicSchema as never)).toThrow(
+      "Invalid MCP draft-2020-12 JSON Schema: <schema>.properties.self must not contain circular references",
+    );
+
+    expect(() =>
+      createBundleMcpJsonSchemaValidator().getValidator({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        enum: [1n],
+      } as never),
+    ).toThrow(
+      "Invalid MCP draft-2020-12 JSON Schema: <schema>.enum[0] must be JSON-compatible; got bigint",
+    );
+  });
+
   it("accepts draft-2020-12 local refs to boolean schemas and anchors", () => {
     const neverValidator = createBundleMcpJsonSchemaValidator().getValidator({
       $schema: "https://json-schema.org/draft/2020-12/schema",
