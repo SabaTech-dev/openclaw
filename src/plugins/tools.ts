@@ -2,6 +2,7 @@ import { compileGlobPatterns, matchesAnyGlobPattern } from "../agents/glob-patte
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY, normalizeToolName } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import { isRecord } from "../shared/record-coerce.js";
 import { normalizeUniqueStringEntries, uniqueStrings } from "../shared/string-normalization.js";
 import { getLoadedRuntimePluginRegistry } from "./active-runtime-registry.js";
@@ -319,6 +320,10 @@ function describeMalformedPluginTool(tool: unknown): string | undefined {
   }
   if (!isRecord(tool.parameters)) {
     return `${name} missing parameters object`;
+  }
+  const parametersIssue = describeNonJsonCompatibleValue(tool.parameters, "parameters");
+  if (parametersIssue) {
+    return `${name} parameters must be JSON-compatible: ${parametersIssue}`;
   }
   return undefined;
 }

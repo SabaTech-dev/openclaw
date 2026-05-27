@@ -2,6 +2,7 @@ import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/p
 import { Type, type Static, type TSchema } from "typebox";
 import { jsonResult, textResult } from "../agents/tools/common.js";
 import type { PluginManifestActivation } from "../plugins/manifest.js";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import {
   buildJsonPluginConfigSchema,
@@ -116,63 +117,6 @@ function wrapToolPluginResult(result: unknown): AgentToolResult<unknown> {
   return jsonResult(result);
 }
 
-function formatSchemaPath(root: string, path: readonly (string | number)[]): string {
-  let current = root;
-  for (const segment of path) {
-    if (typeof segment === "number") {
-      current = `${current}[${segment}]`;
-      continue;
-    }
-    current = current ? `${current}.${segment}` : segment;
-  }
-  return current || root || "schema";
-}
-
-function describeNonJsonSchemaValue(
-  value: unknown,
-  path: readonly (string | number)[],
-  stack: WeakSet<object>,
-): string | undefined {
-  if (value === null) {
-    return undefined;
-  }
-  if (typeof value === "string" || typeof value === "boolean") {
-    return undefined;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? undefined : `${formatSchemaPath("", path)} must be finite`;
-  }
-  if (typeof value !== "object") {
-    return `${formatSchemaPath("", path)} must be JSON-compatible; got ${typeof value}`;
-  }
-  if (stack.has(value)) {
-    return `${formatSchemaPath("", path)} must not contain circular references`;
-  }
-
-  stack.add(value);
-  try {
-    if (Array.isArray(value)) {
-      for (let index = 0; index < value.length; index += 1) {
-        const issue = describeNonJsonSchemaValue(value[index], [...path, index], stack);
-        if (issue) {
-          return issue;
-        }
-      }
-      return undefined;
-    }
-
-    for (const [key, entry] of Object.entries(value)) {
-      const issue = describeNonJsonSchemaValue(entry, [...path, key], stack);
-      if (issue) {
-        return issue;
-      }
-    }
-    return undefined;
-  } finally {
-    stack.delete(value);
-  }
-}
-
 function assertJsonCompatibleSchemaObject(
   value: unknown,
   owner: string,
@@ -180,7 +124,7 @@ function assertJsonCompatibleSchemaObject(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${owner} must be a JSON-compatible schema object`);
   }
-  const issue = describeNonJsonSchemaValue(value, [], new WeakSet());
+  const issue = describeNonJsonCompatibleValue(value, "schema");
   if (issue) {
     throw new Error(`${owner} must be a JSON-compatible schema object: ${issue}`);
   }

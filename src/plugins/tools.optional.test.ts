@@ -1526,6 +1526,45 @@ describe("resolvePluginTools optional tools", () => {
     );
   });
 
+  it("skips plugin tools with non-JSON-safe parameter schemas while keeping valid siblings", () => {
+    const cyclicParameters: {
+      type: "object";
+      properties: Record<string, unknown>;
+    } = {
+      type: "object",
+      properties: {
+        angle: {
+          type: "number",
+          default: 1n,
+        },
+      },
+    };
+    cyclicParameters.properties.self = cyclicParameters as never;
+    const registry = setRegistry([
+      {
+        pluginId: "fuzzplugin",
+        optional: false,
+        source: "/tmp/fuzzplugin.js",
+        names: ["fuzz_move_angles", "fuzz_status"],
+        factory: () => [
+          {
+            ...makeTool("fuzz_move_angles"),
+            parameters: cyclicParameters,
+          },
+          makeTool("fuzz_status"),
+        ],
+      },
+    ]);
+
+    const tools = resolvePluginTools(createResolveToolsParams());
+
+    expectResolvedToolNames(tools, ["fuzz_status"]);
+    expectSingleDiagnosticMessage(
+      registry.diagnostics,
+      "plugin tool is malformed (fuzzplugin): fuzz_move_angles parameters must be JSON-compatible",
+    );
+  });
+
   it("warns with plugin factory timing details when a factory is slow", () => {
     vi.useFakeTimers({ now: 0 });
     const warnSpy = installConsoleMethodSpy("warn");
