@@ -87,6 +87,22 @@ describe("buildPluginConfigSchema", () => {
     });
     expect(safeParse).toHaveBeenCalledWith({ enabled: false });
   });
+
+  it("rejects non-JSON-compatible toJSONSchema output before normalization", () => {
+    const cyclicSchema: Record<string, unknown> = {
+      type: "object",
+      properties: {},
+    };
+    cyclicSchema.properties = { self: cyclicSchema };
+    const schema = {
+      safeParse: vi.fn(),
+      toJSONSchema: vi.fn(() => cyclicSchema),
+    } as unknown as Parameters<typeof buildPluginConfigSchema>[0];
+
+    expect(() => buildPluginConfigSchema(schema)).toThrow(
+      "invalid plugin config JSON Schema: <schema>.properties.self must not contain circular references",
+    );
+  });
 });
 
 describe("buildJsonPluginConfigSchema", () => {
@@ -117,6 +133,35 @@ describe("buildJsonPluginConfigSchema", () => {
       success: false,
       error: { issues: [{ path: ["enabled"], message: "must be boolean" }] },
     });
+  });
+
+  it("rejects non-JSON-compatible direct schemas before metadata exposure", () => {
+    const cyclicSchema: Record<string, unknown> = {
+      type: "object",
+      properties: {},
+    };
+    cyclicSchema.properties = { self: cyclicSchema };
+
+    expect(() =>
+      buildJsonPluginConfigSchema(cyclicSchema as never, {
+        cacheKey: "config-schema.test.fuzzplugin.cyclic",
+      }),
+    ).toThrow(
+      "invalid plugin config JSON Schema: <schema>.properties.self must not contain circular references",
+    );
+    expect(() =>
+      buildJsonPluginConfigSchema(
+        {
+          type: "object",
+          properties: {
+            count: { enum: [1n] },
+          },
+        } as never,
+        { cacheKey: "config-schema.test.fuzzplugin.bigint" },
+      ),
+    ).toThrow(
+      "invalid plugin config JSON Schema: <schema>.properties.count.enum[0] must be JSON-compatible; got bigint",
+    );
   });
 });
 

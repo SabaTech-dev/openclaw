@@ -1,4 +1,5 @@
 import { z, type ZodTypeAny } from "zod";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import type { PluginConfigUiHint } from "./manifest-types.js";
 import { validateJsonSchemaValue } from "./schema-validator.js";
@@ -84,6 +85,14 @@ function normalizeJsonSchema(schema: unknown): unknown {
   return record;
 }
 
+function normalizePluginConfigJsonSchema(schema: unknown): JsonSchemaObject {
+  const jsonIssue = describeNonJsonCompatibleValue(schema, "<schema>");
+  if (jsonIssue) {
+    throw new Error(`invalid plugin config JSON Schema: ${jsonIssue}`);
+  }
+  return normalizeJsonSchema(schema) as JsonSchemaObject;
+}
+
 function toIssuePath(path: string): Array<string | number> {
   if (!path || path === "<root>") {
     return [];
@@ -123,6 +132,7 @@ export function buildJsonPluginConfigSchema(
   schema: JsonSchemaObject,
   options?: BuildJsonPluginConfigSchemaOptions,
 ): OpenClawPluginConfigSchema {
+  const jsonSchema = normalizePluginConfigJsonSchema(schema);
   const safeParse =
     options?.safeParse ??
     ((value: unknown) =>
@@ -130,7 +140,7 @@ export function buildJsonPluginConfigSchema(
   return {
     safeParse,
     ...(options?.uiHints ? { uiHints: options.uiHints } : {}),
-    jsonSchema: normalizeJsonSchema(schema) as JsonSchemaObject,
+    jsonSchema,
   };
 }
 
@@ -141,16 +151,15 @@ export function buildPluginConfigSchema(
   const schemaWithJson = schema as ZodSchemaWithToJsonSchema;
   const safeParse = options?.safeParse ?? ((value) => safeParseRuntimeSchema(schema, value));
   if (typeof schemaWithJson.toJSONSchema === "function") {
+    const jsonSchema = schemaWithJson.toJSONSchema({
+      target: "draft-07",
+      io: "input",
+      unrepresentable: "any",
+    });
     return {
       safeParse,
       ...(options?.uiHints ? { uiHints: options.uiHints } : {}),
-      jsonSchema: normalizeJsonSchema(
-        schemaWithJson.toJSONSchema({
-          target: "draft-07",
-          io: "input",
-          unrepresentable: "any",
-        }),
-      ) as JsonSchemaObject,
+      jsonSchema: normalizePluginConfigJsonSchema(jsonSchema),
     };
   }
 
