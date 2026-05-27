@@ -240,6 +240,35 @@ describe("schema validator", () => {
     ).toThrow("invalid schema");
   });
 
+  it("rejects non-JSON-compatible schema values before recursive validation", () => {
+    const cyclicSchema: {
+      type: "object";
+      properties: Record<string, unknown>;
+    } = {
+      type: "object",
+      properties: {},
+    };
+    cyclicSchema.properties.self = cyclicSchema;
+
+    expect(() =>
+      validateJsonSchemaValue({
+        cacheKey: "schema-validator.test.fuzzplugin.cyclic-schema",
+        schema: cyclicSchema,
+        value: {},
+      }),
+    ).toThrow("invalid schema: <schema>.properties.self must not contain circular references");
+
+    expect(() =>
+      validateJsonSchemaValue({
+        cacheKey: "schema-validator.test.fuzzplugin.bigint-enum",
+        schema: {
+          enum: [1n],
+        },
+        value: 1,
+      }),
+    ).toThrow("invalid schema: <schema>.enum[0] must be JSON-compatible; got bigint");
+  });
+
   it("rejects invalid JSON Schema constraint keyword values", () => {
     for (const [cacheKey, schema] of [
       [

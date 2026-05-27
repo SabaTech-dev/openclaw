@@ -1,6 +1,7 @@
 import { Compile, type Validator as TypeBoxValidator } from "typebox/compile";
 import { Format } from "typebox/format";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "../config/allowed-values.js";
+import { describeNonJsonCompatibleValue } from "../shared/json-compatible.js";
 import {
   applyJsonSchemaDefaults,
   findJsonSchemaShapeError,
@@ -324,6 +325,11 @@ export function validateJsonSchemaValue(params: {
   applyDefaults?: boolean;
   cache?: boolean;
 }): { ok: true; value: unknown } | { ok: false; errors: JsonSchemaValidationError[] } {
+  const jsonIssue = describeNonJsonCompatibleValue(params.schema, "<schema>");
+  if (jsonIssue) {
+    throw new Error(sanitizeTerminalText(`invalid schema: ${jsonIssue}`));
+  }
+
   const schemaError = findJsonSchemaShapeError(params.schema);
   if (schemaError) {
     throw new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`));
