@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RoutePeer } from "../../routing/resolve-route.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
+import { uniqueStrings } from "../../shared/string-normalization.js";
 import { buildOutboundBaseSessionKey } from "./base-session-key.js";
 import type { ResolvedMessagingTarget } from "./target-resolver.js";
 
@@ -124,10 +125,7 @@ function inferPeerKind(params: {
   }
   const plugin = resolveOutboundChannelPlugin(params.channel);
   const strippedTarget = stripProviderPrefix(params.target, params.channel).trim();
-  const targets = [params.target, strippedTarget].filter(
-    (target, index, values): target is string =>
-      Boolean(target) && values.indexOf(target) === index,
-  );
+  const targets = uniqueStrings([params.target, strippedTarget].filter(Boolean));
   return (
     inferPeerKindFromPlugin({ plugin, targets }) ??
     inferPeerKindFromLegacyParser({ plugin, targets }) ??

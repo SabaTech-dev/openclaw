@@ -10,8 +10,8 @@ import { buildCodeSpanIndex, createInlineCodeState } from "../markdown/code-span
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { findFinalTagMatches } from "../shared/text/final-tags.js";
 import { hasOrphanReasoningCloseBoundary } from "../shared/text/reasoning-tags.js";
-import { mediaUrlsFromGeneratedAttachments } from "./generated-attachments.js";
 import type { AgentMessage } from "./agent-core-contract.js";
+import { mediaUrlsFromGeneratedAttachments } from "./generated-attachments.js";
 import { EmbeddedBlockChunker } from "./pi-embedded-block-chunker.js";
 import {
   isMessagingToolDuplicateNormalized,
@@ -565,7 +565,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       toolName,
       mediaUrls ?? [],
       result,
-      params.builtinToolNames,
+      params.trustedLocalMediaToolNames,
     );
     if (
       params.sourceReplyDeliveryMode === "message_tool_only" &&
@@ -1010,6 +1010,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     blockChunker,
     hookRunner: params.hookRunner,
     builtinToolNames: params.builtinToolNames,
+    trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
     noteLastAssistant,
     shouldEmitToolResult,
     shouldEmitToolOutput,

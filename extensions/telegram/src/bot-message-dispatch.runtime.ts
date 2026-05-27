@@ -4,6 +4,7 @@ export {
   getSessionEntry,
   listSessionEntries,
   resolveAndPersistSessionFile,
+  resolveStorePath,
   resolveSessionStoreEntry,
   resolveSessionRowEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";

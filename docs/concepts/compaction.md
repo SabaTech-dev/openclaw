@@ -101,19 +101,19 @@ Compaction summarization preserves opaque identifiers by default (`identifierPol
 When `agents.defaults.compaction.maxActiveTranscriptBytes` is set, OpenClaw triggers normal local compaction before a run if the active SQLite transcript reaches that size. This is useful for long-running sessions where provider-side context management may keep model context healthy while the local transcript keeps growing. It does not split raw transcript events; it asks the normal compaction pipeline to create a semantic summary.
 
 <Warning>
-The byte guard requires `truncateAfterCompaction: true`. Without transcript rotation, the active file would not shrink and the guard remains inactive.
+The byte guard requires `rotateAfterCompaction: true`. Without transcript rotation, the active transcript would not shrink and the guard remains inactive.
 </Warning>
 
 ### Successor transcripts
 
-When `agents.defaults.compaction.truncateAfterCompaction` is enabled, OpenClaw rewrites the active SQLite transcript to a compacted successor built from the compaction summary, preserved state, and unsummarized tail, then keeps the previous full transcript as a checkpoint snapshot while retained.
+When `agents.defaults.compaction.rotateAfterCompaction` is enabled, OpenClaw does not rewrite the existing SQLite transcript in place. It creates a new active successor transcript from the compaction summary, preserved state, and unsummarized tail, then records checkpoint metadata that points branch/restore flows at the compacted successor while the previous full transcript is retained as a checkpoint snapshot.
 Successor transcripts also drop exact duplicate long user turns that arrive
 inside a short retry window, so channel retry storms are not carried into the
 next active transcript after compaction.
 
-Pre-compaction checkpoints are retained only while they stay below OpenClaw's
-checkpoint size cap; oversized active transcripts still compact, but OpenClaw
-skips the large debug snapshot instead of doubling disk usage.
+OpenClaw no longer writes separate `.checkpoint.*.jsonl` copies for new
+compactions. Existing legacy checkpoint files can still be used while referenced
+and are pruned by normal session cleanup.
 
 ### Compaction notices
 

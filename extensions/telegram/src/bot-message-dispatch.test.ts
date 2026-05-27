@@ -63,6 +63,13 @@ const createChannelMessageReplyPipeline = vi.hoisted(() =>
 const wasSentByBot = vi.hoisted(() => vi.fn(() => false));
 const readLatestAssistantTextFromSessionTranscript = vi.hoisted(() => vi.fn());
 const sessionRows = vi.hoisted(() => ({ value: {} as Record<string, Record<string, unknown>> }));
+const resolveStorePath = vi.hoisted(() =>
+  vi.fn(
+    (_storePath?: string, opts?: { agentId?: string }) =>
+      `/tmp/openclaw/agents/${opts?.agentId ?? "default"}/sessions/sessions.json`,
+  ),
+);
+const loadSessionStore = vi.hoisted(() => vi.fn(() => sessionRows.value));
 const getSessionEntry = vi.hoisted(() =>
   vi.fn(({ sessionKey }: { sessionKey: string }) => sessionRows.value[sessionKey]),
 );
@@ -147,6 +154,8 @@ let resetTelegramReplyFenceForTests: typeof import("./bot-message-dispatch.js").
 const telegramDepsForTest: TelegramBotDeps = {
   getRuntimeConfig: loadConfig as TelegramBotDeps["getRuntimeConfig"],
   getSessionEntry: getSessionEntry as unknown as TelegramBotDeps["getSessionEntry"],
+  resolveStorePath: resolveStorePath as TelegramBotDeps["resolveStorePath"],
+  loadSessionStore: loadSessionStore as TelegramBotDeps["loadSessionStore"],
   listSessionEntries: vi.fn(() => []) as TelegramBotDeps["listSessionEntries"],
   patchSessionEntry: vi.fn(async () => null) as TelegramBotDeps["patchSessionEntry"],
   readChannelAllowFromStore:
@@ -208,6 +217,13 @@ describe("dispatchTelegramMessage draft streaming", () => {
     wasSentByBot.mockReset();
     readLatestAssistantTextFromSessionTranscript.mockReset();
     sessionRows.value = {};
+    resolveStorePath.mockReset();
+    resolveStorePath.mockImplementation(
+      (_storePath?: string, opts?: { agentId?: string }) =>
+        `/tmp/openclaw/agents/${opts?.agentId ?? "default"}/sessions/sessions.json`,
+    );
+    loadSessionStore.mockReset();
+    loadSessionStore.mockImplementation(() => sessionRows.value);
     getSessionEntry.mockReset();
     getSessionEntry.mockImplementation(
       ({ sessionKey }: { sessionKey: string }) => sessionRows.value[sessionKey],
@@ -460,20 +476,18 @@ describe("dispatchTelegramMessage draft streaming", () => {
   }
 
   function createReasoningStreamContext(): TelegramMessageContext {
+    const sessionKey = "agent:default:telegram:direct:123";
     sessionRows.value = {
-      s1: { reasoningLevel: "stream" },
+      [sessionKey]: { reasoningLevel: "stream" },
     };
     return createContext({
-      ctxPayload: { SessionKey: "s1" } as unknown as TelegramMessageContext["ctxPayload"],
+      ctxPayload: { SessionKey: sessionKey } as unknown as TelegramMessageContext["ctxPayload"],
     });
   }
 
   function createReasoningDefaultContext(): TelegramMessageContext {
-    sessionRows.value = {
-      s1: {},
-    };
     return createContext({
-      ctxPayload: { SessionKey: "s1" } as unknown as TelegramMessageContext["ctxPayload"],
+      ctxPayload: {} as unknown as TelegramMessageContext["ctxPayload"],
       route: { agentId: "ops" } as unknown as TelegramMessageContext["route"],
     });
   }
@@ -1492,7 +1506,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
 
     expect(answerDraftStream.update).toHaveBeenCalledWith(
-      "Cracking...\n`🛠️ Exec`\n`🛠️ git rev-parse --abbrev-ref HEAD`",
+      "Cracking\n\n`🛠️ Exec`\n`🛠️ git rev-parse --abbrev-ref HEAD`",
     );
     expect(answerDraftStream.update).not.toHaveBeenCalledWith("Branch is up to date");
     expect(answerDraftStream.forceNewMessage).toHaveBeenCalledTimes(1);
@@ -1628,7 +1642,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
       telegramCfg: { streaming: { mode: "progress", progress: { label: "Shelling" } } },
     });
 
-    expect(draftStream.update).toHaveBeenCalledWith("Shelling\n`🛠️ Exec`");
+    expect(draftStream.update).toHaveBeenCalledWith("Shelling\n\n`🛠️ Exec`");
     expect(draftStream.flush).toHaveBeenCalled();
   });
 
@@ -1650,7 +1664,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
       const updateBeforeStatusReaction = draftStream.update.mock.calls.at(-1)?.[0];
       releaseSetTool?.();
       await pendingToolStart;
-      expect(updateBeforeStatusReaction).toMatch(/^Shelling\n`🛠️ Exec`$/);
+      expect(updateBeforeStatusReaction).toMatch(/^Shelling\n\n`🛠️ Exec`$/);
       return { queuedFinal: false };
     });
 
@@ -1687,7 +1701,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
 
     expect(draftStream.update).toHaveBeenCalledWith(
-      "Shelling\n`🔎 Web Search: docs lookup`\n• `tests passed`",
+      "Shelling\n\n`🔎 Web Search: docs lookup`\n• `tests passed`",
     );
     expect(draftStream.forceNewMessage).toHaveBeenCalledTimes(1);
     expect(draftStream.materialize).not.toHaveBeenCalled();
@@ -1769,7 +1783,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     await dispatchWithContext({ context: createReasoningStreamContext() });
 
-    expect(reasoningDraftStream.update).toHaveBeenCalledWith("Reasoning:\n_Thinking_");
+    expect(reasoningDraftStream.update).toHaveBeenCalledWith("Thinking\n\n_Thinking_");
     expect(answerDraftStream.update).toHaveBeenCalledWith("Answer");
     expect(deliverReplies).not.toHaveBeenCalled();
   });
@@ -1791,13 +1805,12 @@ describe("dispatchTelegramMessage draft streaming", () => {
       context: createReasoningDefaultContext(),
       cfg: {
         agents: {
-          defaults: { reasoningDefault: "off" },
-          list: [{ id: "Ops", reasoningDefault: "stream" }],
+          defaults: { reasoningDefault: "stream" },
         },
       },
     });
 
-    expect(reasoningDraftStream.update).toHaveBeenCalledWith("Reasoning:\n_Thinking_");
+    expect(reasoningDraftStream.update).toHaveBeenCalledWith("Thinking\n\n_Thinking_");
     expect(answerDraftStream.update).toHaveBeenCalledWith("Answer");
   });
 
@@ -2400,6 +2413,244 @@ describe("dispatchTelegramMessage draft streaming", () => {
       ),
     );
     expect(deliveredTexts).toContain("fresh request answer");
+  });
+
+  it("keeps newer DM requests from aborting active same-session dispatch", async () => {
+    let firstStarted: (() => void) | undefined;
+    const firstStartGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let secondStarted: (() => void) | undefined;
+    const secondStartGate = new Promise<void>((resolve) => {
+      secondStarted = resolve;
+    });
+    let firstAbortSignal: AbortSignal | undefined;
+    dispatchReplyWithBufferedBlockDispatcher
+      .mockImplementationOnce(async ({ dispatcherOptions, replyOptions }) => {
+        firstAbortSignal = replyOptions?.abortSignal;
+        firstStarted?.();
+        await firstGate;
+        await dispatcherOptions.deliver({ text: "earlier DM answer" }, { kind: "final" });
+        return {
+          queuedFinal: true,
+          counts: { block: 0, final: 1, tool: 0 },
+        };
+      })
+      .mockImplementationOnce(async ({ dispatcherOptions }) => {
+        secondStarted?.();
+        await dispatcherOptions.deliver({ text: "fresh DM answer" }, { kind: "final" });
+        return {
+          queuedFinal: true,
+          counts: { block: 0, final: 1, tool: 0 },
+        };
+      });
+    deliverReplies.mockResolvedValue({ delivered: true });
+
+    const createDirectContext = (messageId: number, body: string) =>
+      createContext({
+        ctxPayload: {
+          SessionKey: "agent:main:main",
+          ChatType: "direct",
+          MessageSid: String(messageId),
+          RawBody: body,
+          BodyForAgent: body,
+          CommandBody: body,
+          CommandAuthorized: true,
+        } as unknown as TelegramMessageContext["ctxPayload"],
+        msg: {
+          chat: { id: 123, type: "private" },
+          message_id: messageId,
+        } as unknown as TelegramMessageContext["msg"],
+        chatId: 123,
+        isGroup: false,
+        historyKey: "telegram:123",
+        historyLimit: 10,
+        groupHistories: new Map(),
+        threadSpec: { id: undefined, scope: "none" },
+      });
+
+    const firstPromise = dispatchWithContext({
+      context: createDirectContext(99, "first request"),
+      streamMode: "off",
+    });
+    await firstStartGate;
+    const secondPromise = dispatchWithContext({
+      context: createDirectContext(100, "second request"),
+      streamMode: "off",
+    });
+    await secondStartGate;
+
+    expect(firstAbortSignal?.aborted).toBe(false);
+    releaseFirst?.();
+    await Promise.all([firstPromise, secondPromise]);
+
+    const deliveredTexts = deliverReplies.mock.calls.flatMap((call) =>
+      ((call[0] as { replies?: Array<{ text?: string }> }).replies ?? []).map(
+        (reply) => reply.text,
+      ),
+    );
+    expect(deliveredTexts).toContain("fresh DM answer");
+    expect(deliveredTexts).toContain("earlier DM answer");
+  });
+
+  it("keeps /btw side questions from aborting an active same-session dispatch", async () => {
+    const historyKey = "telegram:group:-100123";
+    const groupHistories = new Map([[historyKey, []]]);
+    let firstStarted: (() => void) | undefined;
+    const firstStartGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let sideStarted: (() => void) | undefined;
+    const sideStartGate = new Promise<void>((resolve) => {
+      sideStarted = resolve;
+    });
+    let releaseSide: (() => void) | undefined;
+    const sideGate = new Promise<void>((resolve) => {
+      releaseSide = resolve;
+    });
+    let firstAbortSignal: AbortSignal | undefined;
+    let sideAbortSignal: AbortSignal | undefined;
+    dispatchReplyWithBufferedBlockDispatcher
+      .mockImplementationOnce(async ({ replyOptions }) => {
+        firstAbortSignal = replyOptions?.abortSignal;
+        firstStarted?.();
+        await firstGate;
+        return {
+          queuedFinal: false,
+          counts: { block: 0, final: 0, tool: 0 },
+        };
+      })
+      .mockImplementationOnce(async ({ replyOptions }) => {
+        sideAbortSignal = replyOptions?.abortSignal;
+        sideStarted?.();
+        await sideGate;
+        return {
+          queuedFinal: false,
+          counts: { block: 0, final: 0, tool: 0 },
+        };
+      });
+
+    const createGroupContext = (messageId: number, body: string) =>
+      createContext({
+        ctxPayload: {
+          SessionKey: "agent:main:telegram:group:-100123",
+          ChatType: "group",
+          MessageSid: String(messageId),
+          RawBody: body,
+          BodyForAgent: body,
+          CommandBody: body,
+          CommandAuthorized: true,
+        } as unknown as TelegramMessageContext["ctxPayload"],
+        msg: {
+          chat: { id: -100123, type: "supergroup" },
+          message_id: messageId,
+          text: body,
+        } as unknown as TelegramMessageContext["msg"],
+        chatId: -100123,
+        isGroup: true,
+        historyKey,
+        historyLimit: 10,
+        groupHistories,
+        threadSpec: { id: undefined, scope: "none" },
+      });
+
+    const firstPromise = dispatchWithContext({
+      context: createGroupContext(99, "@bot first request"),
+      streamMode: "off",
+    });
+    await firstStartGate;
+    const sidePromise = dispatchWithContext({
+      context: createGroupContext(100, "/btw what changed?"),
+      streamMode: "off",
+    });
+    await sideStartGate;
+
+    expect(firstAbortSignal?.aborted).toBe(false);
+    const { buildTelegramReplyFenceLaneKey, supersedeTelegramReplyFenceLane } =
+      await import("./telegram-reply-fence.js");
+    supersedeTelegramReplyFenceLane(
+      buildTelegramReplyFenceLaneKey({
+        accountId: "default",
+        sequentialKey: "telegram:-100123:btw:100",
+      }),
+    );
+    expect(sideAbortSignal?.aborted).toBe(true);
+    expect(firstAbortSignal?.aborted).toBe(false);
+    releaseSide?.();
+    releaseFirst?.();
+    await Promise.all([firstPromise, sidePromise]);
+  });
+
+  it("lets authorized /stop abort active non-interrupting side dispatch", async () => {
+    const historyKey = "telegram:group:-100123";
+    const groupHistories = new Map([[historyKey, []]]);
+    let sideStarted: (() => void) | undefined;
+    const sideStartGate = new Promise<void>((resolve) => {
+      sideStarted = resolve;
+    });
+    let releaseSide: (() => void) | undefined;
+    const sideGate = new Promise<void>((resolve) => {
+      releaseSide = resolve;
+    });
+    let sideAbortSignal: AbortSignal | undefined;
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(async ({ replyOptions }) => {
+      sideAbortSignal = replyOptions?.abortSignal;
+      sideStarted?.();
+      await sideGate;
+      return {
+        queuedFinal: false,
+        counts: { block: 0, final: 0, tool: 0 },
+      };
+    });
+    deliverReplies.mockResolvedValue({ delivered: true });
+
+    const createGroupContext = (messageId: number, body: string) =>
+      createContext({
+        ctxPayload: {
+          SessionKey: "agent:main:telegram:group:-100123",
+          ChatType: "group",
+          MessageSid: String(messageId),
+          RawBody: body,
+          BodyForAgent: body,
+          CommandBody: body,
+          CommandAuthorized: true,
+        } as unknown as TelegramMessageContext["ctxPayload"],
+        msg: {
+          chat: { id: -100123, type: "supergroup" },
+          message_id: messageId,
+          text: body,
+        } as unknown as TelegramMessageContext["msg"],
+        chatId: -100123,
+        isGroup: true,
+        historyKey,
+        historyLimit: 10,
+        groupHistories,
+        threadSpec: { id: undefined, scope: "none" },
+      });
+
+    const sidePromise = dispatchWithContext({
+      context: createGroupContext(100, "/btw what changed?"),
+      streamMode: "off",
+    });
+    await sideStartGate;
+    expect(sideAbortSignal?.aborted).toBe(false);
+
+    await dispatchWithContext({
+      context: createGroupContext(101, "/stop"),
+      streamMode: "off",
+    });
+
+    expect(sideAbortSignal?.aborted).toBe(true);
+    releaseSide?.();
+    await sidePromise;
   });
 
   it("keeps queued room events abortable after their source dispatch returns", async () => {

@@ -570,6 +570,7 @@ export function buildRunClaudeCliAgentParams(params: RunClaudeCliAgentParams): R
   return {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    sessionEntry: params.sessionEntry,
     agentId: params.agentId,
     trigger: params.trigger,
     workspaceDir: params.workspaceDir,
@@ -591,6 +592,7 @@ export function buildRunClaudeCliAgentParams(params: RunClaudeCliAgentParams): R
     // Ignore it here so the compatibility wrapper does not accidentally resume
     // an incompatible Claude session on the generic runner path.
     images: params.images,
+    senderIsOwner: params.senderIsOwner,
     messageChannel: params.messageChannel,
     messageProvider: params.messageProvider,
   };

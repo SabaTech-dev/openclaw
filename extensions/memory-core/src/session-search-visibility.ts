@@ -96,13 +96,37 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
     ) {
       continue;
     }
+    const isQmdSessionHit = hit.path.replace(/\\/g, "/").startsWith("qmd/");
+    const archivedOwnerMatchesScope = Boolean(
+      identity.archived &&
+      ((identity.ownerAgentId &&
+        (!scopedAgentId ||
+          normalizeAgentIdForCompare(identity.ownerAgentId) ===
+            normalizeAgentIdForCompare(scopedAgentId))) ||
+        (isQmdSessionHit && scopedAgentId)),
+    );
+    const archivedOwnerAgentId = archivedOwnerMatchesScope
+      ? (identity.ownerAgentId ?? scopedAgentId)
+      : undefined;
+    const liveKeys = identity.liveStem
+      ? resolveTranscriptStemToSessionKeys({
+          entries: combinedSessionEntries,
+          stem: identity.liveStem,
+          allowQmdSlugFallback: false,
+        })
+      : [];
     const keys = filterSessionKeysByScopedAgent({
       cfg: params.cfg,
       scopedAgentId,
-      keys: resolveTranscriptStemToSessionKeys({
-        entries: combinedSessionEntries,
-        stem: identity.stem,
-      }),
+      keys:
+        liveKeys.length > 0
+          ? liveKeys
+          : resolveTranscriptStemToSessionKeys({
+              entries: combinedSessionEntries,
+              stem: identity.stem,
+              allowQmdSlugFallback: isQmdSessionHit && !identity.archived,
+              ...(archivedOwnerAgentId ? { archivedOwnerAgentId } : {}),
+            }),
     });
     if (keys.length === 0) {
       continue;

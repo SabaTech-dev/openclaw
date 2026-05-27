@@ -569,10 +569,14 @@ export function resolveSqliteSessionTranscriptScope(
 }
 
 export function listSqliteSessionTranscripts(
-  options: OpenClawStateDatabaseOptions & { agentId?: string } = {},
+  options: OpenClawStateDatabaseOptions & { agentId?: string; minUpdatedAt?: number } = {},
 ): SqliteSessionTranscript[] {
   const agentDatabases = listTranscriptAgentDatabaseTargets(options);
   const transcripts: SqliteSessionTranscript[] = [];
+  const minUpdatedAt =
+    typeof options.minUpdatedAt === "number" && Number.isFinite(options.minUpdatedAt)
+      ? Math.floor(options.minUpdatedAt)
+      : undefined;
   for (const agentDatabase of agentDatabases) {
     const database = openOpenClawAgentDatabase({
       ...options,
@@ -583,13 +587,17 @@ export function listSqliteSessionTranscripts(
       ...executeSqliteQuerySync(
         database.db,
         getAgentTranscriptKysely(database.db)
-          .selectFrom("transcript_events as events")
+          .selectFrom("sessions")
+          .innerJoin("transcript_events as events", "events.session_id", "sessions.session_id")
           .select([
             "events.session_id",
-            (eb) => eb.fn.max<number | bigint>("events.created_at").as("updated_at"),
+            "sessions.updated_at",
             (eb) => eb.fn.countAll<number | bigint>().as("event_count"),
           ])
-          .groupBy("events.session_id")
+          .$if(minUpdatedAt !== undefined, (query) =>
+            query.where("sessions.updated_at", ">=", minUpdatedAt!),
+          )
+          .groupBy(["events.session_id", "sessions.updated_at"])
           .orderBy("updated_at", "desc")
           .orderBy("events.session_id", "asc"),
       ).rows.flatMap((row) => {

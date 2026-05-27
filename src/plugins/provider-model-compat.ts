@@ -1,6 +1,7 @@
 import { detectOpenAICompletionsCompat } from "../agents/openai-completions-compat.js";
 import type { Api, Model } from "../agents/pi-ai-contract.js";
 import type { ModelCompatConfig } from "../config/types.models.js";
+import { normalizeStringEntries } from "../shared/string-normalization.js";
 
 export function extractModelCompat(
   modelOrCompat: { compat?: unknown } | ModelCompatConfig | undefined,
@@ -58,10 +59,9 @@ export function resolveUnsupportedToolSchemaKeywords(
 ): ReadonlySet<string> {
   const keywords = extractModelCompat(modelOrCompat)?.unsupportedToolSchemaKeywords ?? [];
   return new Set(
-    keywords
-      .filter((keyword): keyword is string => typeof keyword === "string")
-      .map((keyword) => keyword.trim())
-      .filter(Boolean),
+    normalizeStringEntries(
+      keywords.filter((keyword): keyword is string => typeof keyword === "string"),
+    ),
   );
 }
 

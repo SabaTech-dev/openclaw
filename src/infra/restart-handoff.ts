@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Insertable, Selectable } from "kysely";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isRecord } from "../shared/record-coerce.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -207,10 +208,6 @@ function isRestartKind(value: unknown): value is GatewayRestartHandoffRestartKin
 
 function isSupervisorMode(value: unknown): value is GatewayRestartHandoffSupervisorMode {
   return value === "launchd" || value === "systemd" || value === "schtasks" || value === "external";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseGatewayRestartHandoff(parsed: unknown): GatewayRestartHandoff | null {

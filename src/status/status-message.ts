@@ -1,7 +1,10 @@
 import { resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveModelAuthMode } from "../agents/model-auth.js";
-import { areRuntimeModelRefsEquivalent } from "../agents/model-runtime-aliases.js";
+import {
+  areRuntimeModelRefsEquivalent,
+  shouldPreferActiveRuntimeAliasAuthLabel,
+} from "../agents/model-runtime-aliases.js";
 import {
   buildModelAliasIndex,
   resolveConfiguredModelRef,
@@ -900,8 +903,15 @@ export function buildStatusMessage(args: StatusArgs): string {
     activeAuthMode && activeAuthMode !== "unknown"
       ? (args.activeModelAuth ?? activeAuthMode)
       : undefined;
-  const selectedAuthLabelValue =
-    rawSelectedAuthLabelValue ?? (runtimeAliasModelEquivalent ? activeAuthLabelValue : undefined);
+  const preferActiveAuthLabel = shouldPreferActiveRuntimeAliasAuthLabel({
+    runtimeAliasModelEquivalent,
+    selectedAuthLabel: rawSelectedAuthLabelValue,
+    activeAuthLabel: activeAuthLabelValue,
+  });
+  const selectedAuthLabelValue = preferActiveAuthLabel
+    ? activeAuthLabelValue
+    : (rawSelectedAuthLabelValue ??
+      (runtimeAliasModelEquivalent ? activeAuthLabelValue : undefined));
   const fallbackState = resolveActiveFallbackState({
     selectedModelRef: selectedModelLabel,
     activeModelRef: activeModelLabel,

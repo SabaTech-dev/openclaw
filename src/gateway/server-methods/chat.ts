@@ -54,6 +54,8 @@ import { isAcpSessionKey } from "../../routing/session-key.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { uniqueStrings } from "../../shared/string-normalization.js";
+import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import {
   stripInlineDirectiveTagsForDisplay,
   sanitizeReplyDirectiveId,
@@ -1751,7 +1753,7 @@ function resolvePreRegisteredAgentDedupeKeys(
       keys.push(normalized);
     }
   }
-  return [...new Set(keys)];
+  return uniqueStrings(keys);
 }
 
 function writePreRegisteredAgentAbort(params: {

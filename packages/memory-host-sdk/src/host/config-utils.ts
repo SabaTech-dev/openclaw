@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { normalizeLowercaseStringOrEmpty, normalizeOptionalString } from "./string-utils.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+  normalizeStringEntries,
+  uniqueStrings,
+} from "./string-utils.js";
 export { splitShellArgs } from "./openclaw-runtime-io.js";
 
 export type ChatType = "direct" | "group" | "channel";
@@ -307,12 +312,13 @@ export function resolveMemorySearchConfig(
   if (!enabled) {
     return null;
   }
-  const rawPaths = [...(defaults?.extraPaths ?? []), ...(overrides?.extraPaths ?? [])]
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const rawPaths = normalizeStringEntries([
+    ...(defaults?.extraPaths ?? []),
+    ...(overrides?.extraPaths ?? []),
+  ]);
   return {
     enabled,
-    extraPaths: Array.from(new Set(rawPaths)),
+    extraPaths: uniqueStrings(rawPaths),
   };
 }
 

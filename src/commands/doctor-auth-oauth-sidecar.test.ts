@@ -162,7 +162,7 @@ describe("maybeRepairLegacyOAuthSidecarProfiles", () => {
     expect(result.detected).toEqual([authPath]);
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes).toStrictEqual([
-      `Migrated 1 sidecar-backed Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.123.bak).`,
+      `Migrated 1 legacy Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.123.bak).`,
     ]);
     expect(fs.existsSync(sidecarPath)).toBe(false);
     expect(JSON.parse(fs.readFileSync(`${authPath}.oauth-ref.123.bak`, "utf8"))).toEqual(
@@ -265,7 +265,7 @@ describe("maybeRepairLegacyOAuthSidecarProfiles", () => {
     expect(result.detected).toEqual([authPath]);
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes).toStrictEqual([
-      `Migrated 1 sidecar-backed Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.321.bak).`,
+      `Migrated 1 legacy Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.321.bak).`,
     ]);
     expect(readStoredAuthProfiles(state).profiles[profileId]).toMatchObject({
       access: "sqlite-access-token",
@@ -467,7 +467,7 @@ describe("maybeRepairLegacyOAuthSidecarProfiles", () => {
       expect(result.detected).toEqual([authPath]);
       expect(result.warnings).toStrictEqual([]);
       expect(result.changes).toStrictEqual([
-        `Migrated 1 sidecar-backed Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.789.bak).`,
+        `Migrated 1 legacy Codex OAuth profile in ${authPath} to inline credentials (backup: ${authPath}.oauth-ref.789.bak).`,
       ]);
       expect(JSON.parse(fs.readFileSync(authPath, "utf8"))).toEqual({
         version: 1,
@@ -539,8 +539,8 @@ describe("maybeRepairLegacyOAuthSidecarProfiles", () => {
     expect(result.detected).toEqual([mainAuthPath, workerAuthPath]);
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes).toEqual([
-      `Migrated 1 sidecar-backed Codex OAuth profile in ${mainAuthPath} to inline credentials (backup: ${mainAuthPath}.oauth-ref.456.bak).`,
-      `Migrated 1 sidecar-backed Codex OAuth profile in ${workerAuthPath} to inline credentials (backup: ${workerAuthPath}.oauth-ref.456.bak).`,
+      `Migrated 1 legacy Codex OAuth profile in ${mainAuthPath} to inline credentials (backup: ${mainAuthPath}.oauth-ref.456.bak).`,
+      `Migrated 1 legacy Codex OAuth profile in ${workerAuthPath} to inline credentials (backup: ${workerAuthPath}.oauth-ref.456.bak).`,
     ]);
     for (const agentId of ["main", "worker"]) {
       expect(readStoredAuthProfiles(state, agentId)).toEqual({

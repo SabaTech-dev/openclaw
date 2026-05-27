@@ -1023,7 +1023,7 @@ describe("bridgeCodexAppServerStartOptions", () => {
     }
   });
 
-  it("skips env API-key fallback when app-server does not require OpenAI auth", async () => {
+  it("uses env API-key fallback when app-server has no account", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
     const request = vi.fn(async (method: string) => {
       if (method === "account/read") {
@@ -1039,8 +1039,11 @@ describe("bridgeCodexAppServerStartOptions", () => {
         startOptions: createStartOptions(),
       });
 
-      expect(request).toHaveBeenCalledTimes(1);
-      expect(request).toHaveBeenCalledWith("account/read", { refreshToken: false });
+      expect(request).toHaveBeenNthCalledWith(1, "account/read", { refreshToken: false });
+      expect(request).toHaveBeenNthCalledWith(2, "account/login/start", {
+        type: "apiKey",
+        apiKey: "codex-env-api-key",
+      });
     } finally {
       await fs.rm(agentDir, { recursive: true, force: true });
     }

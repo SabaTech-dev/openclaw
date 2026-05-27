@@ -28,12 +28,14 @@ import { resolveGatewaySessionDatabaseTarget } from "./session-utils.js";
 const log = createSubsystemLogger("gateway/session-compaction-checkpoints");
 const MAX_COMPACTION_CHECKPOINTS_PER_SESSION = 25;
 export const MAX_COMPACTION_CHECKPOINT_SNAPSHOT_BYTES = 64 * 1024 * 1024;
+export const MAX_COMPACTION_CHECKPOINT_RETAINED_BYTES_PER_SESSION = 128 * 1024 * 1024;
 
 export type CapturedCompactionCheckpointSnapshot = {
   agentId: string;
   path?: string;
   sourceSessionId: string;
   sessionId: string;
+  sessionFile?: string;
   leafId: string;
 };
 
@@ -41,17 +43,55 @@ type ForkedCompactionCheckpointTranscript = {
   sessionId: string;
 };
 
-function trimSessionCheckpoints(checkpoints: SessionCompactionCheckpoint[] | undefined): {
+function checkpointSnapshotStorageKey(checkpoint: SessionCompactionCheckpoint): string {
+  const sessionFile = checkpoint.preCompaction.sessionFile?.trim();
+  return sessionFile ? `file:${sessionFile}` : `sqlite:${checkpoint.preCompaction.sessionId}`;
+}
+
+function checkpointSnapshotBytes(
+  checkpoint: SessionCompactionCheckpoint,
+  snapshotBytesByKey: ReadonlyMap<string, number>,
+): number {
+  const bytes = snapshotBytesByKey.get(checkpointSnapshotStorageKey(checkpoint));
+  return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+}
+
+function trimSessionCheckpoints(
+  checkpoints: SessionCompactionCheckpoint[] | undefined,
+  snapshotBytesByKey: ReadonlyMap<string, number> = new Map(),
+): {
   kept: SessionCompactionCheckpoint[] | undefined;
   removed: SessionCompactionCheckpoint[];
 } {
   if (!Array.isArray(checkpoints) || checkpoints.length === 0) {
     return { kept: undefined, removed: [] };
   }
-  const kept = checkpoints.slice(-MAX_COMPACTION_CHECKPOINTS_PER_SESSION);
+  const countTrimmed = checkpoints.slice(-MAX_COMPACTION_CHECKPOINTS_PER_SESSION);
+  const countRemoved = checkpoints.slice(0, Math.max(0, checkpoints.length - countTrimmed.length));
+  const keptNewestFirst: SessionCompactionCheckpoint[] = [];
+  const byteRemovedNewestFirst: SessionCompactionCheckpoint[] = [];
+  let retainedBytes = 0;
+  for (let index = countTrimmed.length - 1; index >= 0; index -= 1) {
+    const checkpoint = countTrimmed[index];
+    if (!checkpoint) {
+      continue;
+    }
+    const checkpointBytes = checkpointSnapshotBytes(checkpoint, snapshotBytesByKey);
+    const alwaysKeepNewestCheckpoint = keptNewestFirst.length === 0;
+    if (
+      alwaysKeepNewestCheckpoint ||
+      retainedBytes + checkpointBytes <= MAX_COMPACTION_CHECKPOINT_RETAINED_BYTES_PER_SESSION
+    ) {
+      keptNewestFirst.push(checkpoint);
+      retainedBytes += checkpointBytes;
+    } else {
+      byteRemovedNewestFirst.push(checkpoint);
+    }
+  }
+  const kept = keptNewestFirst.toReversed();
   return {
-    kept,
-    removed: checkpoints.slice(0, Math.max(0, checkpoints.length - kept.length)),
+    kept: kept.length > 0 ? kept : undefined,
+    removed: [...countRemoved, ...byteRemovedNewestFirst.toReversed()],
   };
 }
 
@@ -59,6 +99,40 @@ function sessionStoreCheckpoints(
   entry: Pick<SessionEntry, "compactionCheckpoints"> | undefined,
 ): SessionCompactionCheckpoint[] {
   return Array.isArray(entry?.compactionCheckpoints) ? [...entry.compactionCheckpoints] : [];
+}
+
+async function collectCheckpointSnapshotBytes(params: {
+  agentId: string;
+  path?: string;
+  checkpoints: readonly SessionCompactionCheckpoint[];
+}): Promise<Map<string, number>> {
+  const bytesByKey = new Map<string, number>();
+  for (const checkpoint of params.checkpoints) {
+    const key = checkpointSnapshotStorageKey(checkpoint);
+    if (bytesByKey.has(key)) {
+      continue;
+    }
+    const sessionFile = checkpoint.preCompaction.sessionFile?.trim();
+    if (sessionFile) {
+      try {
+        const stat = await fs.stat(sessionFile);
+        bytesByKey.set(key, stat.isFile() ? stat.size : 0);
+      } catch {
+        bytesByKey.set(key, 0);
+      }
+      continue;
+    }
+    const stats = getSqliteSessionTranscriptStats({
+      agentId: params.agentId,
+      path: params.path,
+      sessionId: checkpoint.preCompaction.sessionId,
+    });
+    bytesByKey.set(
+      key,
+      stats && Number.isFinite(stats.jsonlBytes) && stats.jsonlBytes > 0 ? stats.jsonlBytes : 0,
+    );
+  }
+  return bytesByKey;
 }
 
 export function resolveSessionCompactionCheckpointReason(params: {
@@ -409,13 +483,18 @@ export async function persistSessionCompactionCheckpoint(params: {
     agentId: target.agentId,
     path: target.databasePath,
     sessionKey: target.canonicalKey,
-    update: (existing) => {
+    update: async (existing) => {
       if (!existing.sessionId) {
         return null;
       }
       const checkpoints = sessionStoreCheckpoints(existing);
       checkpoints.push(checkpoint);
-      trimmedCheckpoints = trimSessionCheckpoints(checkpoints);
+      const snapshotBytesByKey = await collectCheckpointSnapshotBytes({
+        agentId: target.agentId,
+        path: target.databasePath,
+        checkpoints,
+      });
+      trimmedCheckpoints = trimSessionCheckpoints(checkpoints, snapshotBytesByKey);
       stored = true;
       return {
         updatedAt: Math.max(existing.updatedAt ?? 0, createdAt),

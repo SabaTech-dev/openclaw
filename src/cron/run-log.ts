@@ -17,6 +17,7 @@ import {
   normalizeOptionalString,
   normalizeStringifiedOptionalString,
 } from "../shared/string-coerce.js";
+import { uniqueValues } from "../shared/string-normalization.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -419,7 +420,7 @@ function normalizeRunStatuses(opts?: {
         status === "ok" || status === "error" || status === "skipped",
     );
     if (filtered.length > 0) {
-      return Array.from(new Set(filtered));
+      return uniqueValues(filtered);
     }
   }
   const status = normalizeRunStatusFilter(opts?.status);
@@ -442,7 +443,7 @@ function normalizeDeliveryStatuses(opts?: {
         status === "not-requested",
     );
     if (filtered.length > 0) {
-      return Array.from(new Set(filtered));
+      return uniqueValues(filtered);
     }
   }
   if (

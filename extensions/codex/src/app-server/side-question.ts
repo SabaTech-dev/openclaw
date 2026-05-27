@@ -20,9 +20,10 @@ import { handleCodexAppServerApprovalRequest } from "./approval-bridge.js";
 import { refreshCodexAppServerAuthTokens } from "./auth-bridge.js";
 import { isCodexAppServerApprovalRequest, type CodexAppServerClient } from "./client.js";
 import {
-  codexSandboxPolicyForTurn,
   readCodexPluginConfig,
   resolveCodexAppServerRuntimeOptions,
+  shouldAutoApproveCodexAppServerApprovals,
+  type CodexAppServerRuntimeOptions,
 } from "./config.js";
 import {
   emitDynamicToolErrorDiagnostic,
@@ -68,6 +69,7 @@ import { readCodexAppServerBinding } from "./session-binding.js";
 import { getSharedCodexAppServerClient } from "./shared-client.js";
 import {
   buildCodexRuntimeThreadConfig,
+  CODEX_NATIVE_PERSONALITY_NONE,
   resolveCodexAppServerModelProvider,
   resolveReasoningEffort,
 } from "./thread-lifecycle.js";
@@ -173,6 +175,8 @@ export async function runCodexAppServerSideQuestion(
   try {
     const cwd = binding.cwd || params.workspaceDir || process.cwd();
     const sideRunParams = buildSideRunAttemptParams(params, { cwd, authProfileId });
+    const approvalPolicy = binding.approvalPolicy ?? appServer.approvalPolicy;
+    const sandbox = binding.sandbox ?? appServer.sandbox;
     const { sessionAgentId } = resolveSessionAgentIds({
       sessionKey: params.sessionKey,
       config: params.cfg,
@@ -219,6 +223,7 @@ export async function runCodexAppServerSideQuestion(
           threadId: childThreadId,
           turnId,
           nativeHookRelay,
+          autoApprove: shouldAutoApproveCodexAppServerApprovals({ approvalPolicy, sandbox }),
           signal: runAbortController.signal,
         });
       }
@@ -266,8 +271,6 @@ export async function runCodexAppServerSideQuestion(
       }
     });
 
-    const approvalPolicy = binding.approvalPolicy ?? appServer.approvalPolicy;
-    const sandbox = binding.sandbox ?? appServer.sandbox;
     const serviceTier = binding.serviceTier ?? appServer.serviceTier;
     const nativeHookRelayEvents = resolveCodexSideNativeHookRelayEvents({
       configuredEvents: options.nativeHookRelay?.events,
@@ -324,6 +327,7 @@ export async function runCodexAppServerSideQuestion(
           threadId: binding.threadId,
           model: params.model,
           ...(modelProvider ? { modelProvider } : {}),
+          personality: CODEX_NATIVE_PERSONALITY_NONE,
           cwd,
           approvalPolicy,
           approvalsReviewer: appServer.approvalsReviewer,
@@ -356,10 +360,8 @@ export async function runCodexAppServerSideQuestion(
           threadId: childThreadId,
           input: [{ type: "text", text: params.question.trim(), text_elements: [] }],
           cwd,
-          approvalPolicy,
-          approvalsReviewer: appServer.approvalsReviewer,
-          sandboxPolicy: codexSandboxPolicyForTurn(sandbox, cwd),
           model: params.model,
+          personality: CODEX_NATIVE_PERSONALITY_NONE,
           ...(serviceTier ? { serviceTier } : {}),
           effort,
           collaborationMode: {
@@ -411,7 +413,7 @@ export async function runCodexAppServerSideQuestion(
 
 function resolveCodexSideNativeHookRelayEvents(params: {
   configuredEvents?: readonly NativeHookRelayEvent[];
-  approvalPolicy: ReturnType<typeof resolveCodexAppServerRuntimeOptions>["approvalPolicy"];
+  approvalPolicy: CodexAppServerRuntimeOptions["approvalPolicy"];
 }): readonly NativeHookRelayEvent[] {
   if (params.configuredEvents?.length) {
     return params.configuredEvents;

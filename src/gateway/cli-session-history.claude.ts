@@ -8,6 +8,7 @@ import {
   type ToolContentBlock,
 } from "../chat/tool-content.js";
 import type { SessionEntry } from "../config/sessions.js";
+import { asFiniteNumber } from "../shared/number-coercion.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { attachOpenClawTranscriptMeta } from "./session-transcript-readers.js";
 
@@ -52,10 +53,6 @@ export function resolveClaudeCliBindingSessionId(
   return normalizeOptionalString(entry?.cliSessionBindings?.[CLAUDE_CLI_PROVIDER]?.sessionId);
 }
 
-function resolveFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function resolveTimestampMs(value: unknown): number | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -68,10 +65,10 @@ function resolveClaudeCliUsage(raw: ClaudeCliUsage) {
   if (!raw || typeof raw !== "object") {
     return undefined;
   }
-  const input = resolveFiniteNumber(raw.input_tokens);
-  const output = resolveFiniteNumber(raw.output_tokens);
-  const cacheRead = resolveFiniteNumber(raw.cache_read_input_tokens);
-  const cacheWrite = resolveFiniteNumber(raw.cache_creation_input_tokens);
+  const input = asFiniteNumber(raw.input_tokens);
+  const output = asFiniteNumber(raw.output_tokens);
+  const cacheRead = asFiniteNumber(raw.cache_read_input_tokens);
+  const cacheWrite = asFiniteNumber(raw.cache_creation_input_tokens);
   if (
     input === undefined &&
     output === undefined &&

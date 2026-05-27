@@ -100,7 +100,7 @@ const GATEWAY_LIVE_HEARTBEAT_MS = Math.max(
 );
 const GATEWAY_LIVE_STRIP_SCAFFOLDING_MODEL_KEYS = new Set([
   "google/gemini-3-flash-preview",
-  "google/gemini-3.1-flash-lite-preview",
+  "google/gemini-3.1-flash-lite",
   "google/gemini-3.1-pro-preview",
   "google/gemini-3.1-pro-preview-customtools",
   "openai/gpt-5.4-pro",
@@ -110,7 +110,7 @@ const GATEWAY_LIVE_EXEC_READ_NONCE_MISS_SKIP_MODEL_KEYS = new Set([
   "fireworks/accounts/fireworks/models/kimi-k2p5",
   "fireworks/accounts/fireworks/models/kimi-k2p6",
   "fireworks/accounts/fireworks/routers/kimi-k2p5-turbo",
-  "google/gemini-3.1-flash-lite-preview",
+  "google/gemini-3.1-flash-lite",
 ]);
 const GATEWAY_LIVE_TOOL_NONCE_MISS_SKIP_MODEL_KEYS = new Set([
   "google/gemini-3-flash-preview",
@@ -567,7 +567,7 @@ describe("maybeStripAssistantScaffoldingForLiveModel", () => {
     expect(
       maybeStripAssistantScaffoldingForLiveModel(
         "<think>hidden</think>Visible",
-        "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite",
       ),
     ).toBe("Visible");
     expect(
@@ -937,6 +937,19 @@ describe("resolveGatewayLiveModelThinkingLevel", () => {
         requestedLevel: "low",
       }),
     ).toBe("off");
+  });
+});
+
+describe("buildLiveGatewayConfig", () => {
+  it("pins selected live gateway models to the Pi runtime", () => {
+    const cfg = buildLiveGatewayConfig({
+      cfg: {},
+      candidates: [createGatewayLiveTestModel("openai", "gpt-5.5")],
+    });
+
+    expect(cfg.agents?.defaults?.models?.["openai/gpt-5.5"]).toEqual({
+      agentRuntime: { id: "pi" },
+    });
   });
 });
 
@@ -1471,11 +1484,10 @@ describe("sanitizeAuthProfileStoreForLiveGateway", () => {
     try {
       const sanitized = sanitizeAuthProfileStoreForLiveGateway(store);
       expect(sanitized.profiles.openaiProfile).toBeUndefined();
-      expect(sanitized.profiles.codexProfile?.type).toBe("oauth");
-      expect(sanitized.profiles.codexProfile?.provider).toBe("openai-codex");
-      expect(sanitized.order).toEqual({ "openai-codex": ["codexProfile"] });
-      expect(sanitized.lastGood).toEqual({ "openai-codex": "codexProfile" });
-      expect(sanitized.usageStats).toEqual({ codexProfile: { lastUsed: 2 } });
+      expect(sanitized.profiles.codexProfile).toBeUndefined();
+      expect(sanitized.order).toBeUndefined();
+      expect(sanitized.lastGood).toBeUndefined();
+      expect(sanitized.usageStats).toBeUndefined();
     } finally {
       if (previousOpenAiKey === undefined) {
         delete process.env.OPENAI_API_KEY;
@@ -1903,7 +1915,15 @@ function buildLiveGatewayConfig(params: {
         // Live tests should avoid Docker sandboxing so tool probes can
         // operate on the temporary probe files we create in the host workspace.
         sandbox: { mode: "off" },
-        models: Object.fromEntries(params.candidates.map((m) => [`${m.provider}/${m.id}`, {}])),
+        // This suite validates direct provider/API-key gateway behavior. OpenAI
+        // agent models otherwise use the implicit Codex runtime, which tests a
+        // different auth/runtime path and can hang until the model timeout.
+        models: Object.fromEntries(
+          params.candidates.map((m) => [
+            `${m.provider}/${m.id}`,
+            { agentRuntime: { id: "pi" as const } },
+          ]),
+        ),
       },
     },
     models:

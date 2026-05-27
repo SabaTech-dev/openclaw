@@ -37,6 +37,9 @@ function requireFirstCallArg(mock: { mock: { calls: readonly (readonly unknown[]
 test("webchat clients cannot patch, delete, compact, or restore sessions", async () => {
   const { dir } = await createSessionFixtureDir();
   const fixture = await createCheckpointFixture(dir);
+  if (!fixture.preCompactionSession || !fixture.preCompactionSessionFile) {
+    throw new Error("expected legacy checkpoint fixture");
+  }
 
   await seedGatewaySessionEntries({
     entries: {

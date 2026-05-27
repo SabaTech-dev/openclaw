@@ -179,6 +179,7 @@ async function deliverSlackThreadAnnouncement(params: {
       isActive: params.isActive,
     }),
     getRuntimeConfig: () => ({}) as never,
+    sendMessage: params.sendMessage ?? runtimeSendMessage,
     ...(params.queueEmbeddedPiMessageWithOutcome
       ? { queueEmbeddedPiMessageWithOutcome: params.queueEmbeddedPiMessageWithOutcome }
       : {}),
@@ -220,6 +221,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
       isActive: false,
     }),
     getRuntimeConfig: () => ({}) as never,
+    sendMessage: params.sendMessage ?? runtimeSendMessage,
   });
 
   return deliverSubagentAnnouncement({
@@ -335,6 +337,7 @@ async function deliverSlackChannelAnnouncement(params: {
       isActive: params.isActive,
     }),
     getRuntimeConfig: () => (params.runtimeConfig ?? {}) as never,
+    sendMessage: params.sendMessage ?? runtimeSendMessage,
     ...(params.queueEmbeddedPiMessageWithOutcome
       ? { queueEmbeddedPiMessageWithOutcome: params.queueEmbeddedPiMessageWithOutcome }
       : {}),
@@ -1668,7 +1671,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("reports failure for completion DMs when announce-agent returns no visible output", async () => {
+  it("directly delivers generated media DMs when announce-agent returns no visible output", async () => {
     const callGateway = createGatewayMock({
       result: {
         payloads: [],
@@ -1697,9 +1700,8 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
 
     expectRecordFields(result, {
-      delivered: false,
+      delivered: true,
       path: "direct",
-      error: "completion agent did not deliver through the message tool",
     });
     expectGatewayAgentParams(callGateway, {
       deliver: false,
@@ -1709,7 +1711,16 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       threadId: undefined,
       sourceReplyDeliveryMode: "message_tool_only",
     });
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "discord",
+        accountId: "acct-1",
+        to: "dm:U123",
+        content: "The generated music is ready.",
+        mediaUrls: ["/tmp/generated-night-drive.mp3"],
+        idempotencyKey: "announce-dm-fallback-empty:generated-media-direct",
+      }),
+    );
   });
 
   it("does not fallback when announce-agent delivered media through the message tool", async () => {
@@ -1966,7 +1977,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("reports generated media completions when the announce agent replies text-only", async () => {
+  it("directly delivers generated media when the announce agent replies text-only", async () => {
     const callGateway = createGatewayMock({
       result: {
         payloads: [
@@ -2006,11 +2017,19 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
 
     expectRecordFields(result, {
-      delivered: false,
+      delivered: true,
       path: "direct",
-      error: "completion agent did not deliver through the message tool",
     });
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "discord",
+        accountId: "acct-1",
+        to: "dm:U123",
+        content: "The generated music is ready.",
+        mediaUrls: ["/tmp/generated-night-drive.mp3"],
+        idempotencyKey: "announce-dm-fallback-empty:generated-media-direct",
+      }),
+    );
   });
 
   it("allows visible direct delivery for media generation failure summaries without generated media", async () => {
@@ -2051,7 +2070,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
   });
 
-  it("reports generated media group completions that miss required message-tool delivery", async () => {
+  it("directly delivers generated media group completions that miss required message-tool delivery", async () => {
     const callGateway = createGatewayMock({
       result: {
         payloads: [
@@ -2089,9 +2108,8 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
 
     expectRecordFields(result, {
-      delivered: false,
+      delivered: true,
       path: "direct",
-      error: "completion agent did not deliver through the message tool",
     });
     expectGatewayAgentParams(callGateway, {
       deliver: false,
@@ -2101,7 +2119,16 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       threadId: undefined,
       sourceReplyDeliveryMode: "message_tool_only",
     });
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "slack",
+        accountId: "acct-1",
+        to: "channel:C123",
+        content: "The generated music is ready.",
+        mediaUrls: ["/tmp/generated-night-drive.mp3"],
+        idempotencyKey: "announce-channel-media-message-tool:generated-media-direct",
+      }),
+    );
   });
 
   it("falls back to a forced message-tool handoff when the active requester run cannot accept one", async () => {
@@ -2177,6 +2204,197 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("directly delivers missing generated media after active requester wake failure", async () => {
+    const callGateway = createGatewayMock({
+      result: {
+        payloads: [],
+        messagingToolSentTargets: [
+          {
+            tool: "message",
+            provider: "slack",
+            accountId: "acct-1",
+            to: "channel:C123",
+            text: "The first image is ready.",
+            mediaUrls: ["/tmp/generated-robot-1.png"],
+          },
+        ],
+      },
+    });
+    const queueEmbeddedPiMessageWithOutcome = createQueueOutcomeSequenceMock([
+      "transcript_commit_wait_unsupported",
+      "no_active_run",
+    ]);
+    const sendMessage = createSendMessageMock();
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      sendMessage,
+      queueEmbeddedPiMessageWithOutcome,
+      sessionId: "requester-session-channel",
+      isActive: true,
+      expectsCompletionMessage: true,
+      directIdempotencyKey: "announce-channel-media-active-wake-failed",
+      sourceTool: "image_generate",
+      internalEvents: [
+        {
+          type: "task_completion",
+          source: "image_generation",
+          childSessionKey: "image_generate:task-123",
+          childSessionId: "task-123",
+          announceType: "image generation task",
+          taskLabel: "two proof images",
+          status: "ok",
+          statusLabel: "completed successfully",
+          result:
+            "Generated 2 images.\nMEDIA:/tmp/generated-robot-1.png\nMEDIA:/tmp/generated-robot-2.png",
+          mediaUrls: ["/tmp/generated-robot-1.png", "/tmp/generated-robot-2.png"],
+          replyInstruction:
+            "Tell the user the images are ready and send them through the message tool.",
+        },
+      ],
+    });
+
+    expectRecordFields(result, {
+      delivered: true,
+      path: "direct",
+    });
+    expect(queueEmbeddedPiMessageWithOutcome).toHaveBeenCalledTimes(2);
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "slack",
+        accountId: "acct-1",
+        to: "channel:C123",
+        content: "The generated image is ready.",
+        mediaUrls: ["/tmp/generated-robot-2.png"],
+        idempotencyKey: "announce-channel-media-active-wake-failed:generated-media-direct",
+      }),
+    );
+  });
+
+  it("directly delivers stale isolated cron run media completions", async () => {
+    const callGateway = createGatewayMock();
+    const sendMessage = createSendMessageMock();
+    const queueEmbeddedPiMessageWithOutcome = createQueueOutcomeMock(true);
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      sendMessage,
+      queueEmbeddedPiMessageWithOutcome,
+      sessionId: "stale-cron-run-session",
+      isActive: false,
+      requesterSessionKey: "agent:main:cron:daily-media:run:run-123",
+      expectsCompletionMessage: true,
+      directIdempotencyKey: "announce-stale-cron-media",
+      sourceTool: "image_generate",
+      internalEvents: [
+        {
+          type: "task_completion",
+          source: "image_generation",
+          childSessionKey: "image_generate:task-123",
+          childSessionId: "task-123",
+          announceType: "image generation task",
+          taskLabel: "daily media",
+          status: "ok",
+          statusLabel: "completed successfully",
+          result: "Generated 1 image.\nMEDIA:/tmp/generated-daily.png",
+          mediaUrls: ["/tmp/generated-daily.png"],
+          replyInstruction: "Deliver the generated image through the requester run.",
+        },
+      ],
+    });
+
+    expectRecordFields(result, {
+      delivered: true,
+      path: "direct",
+    });
+    expect(queueEmbeddedPiMessageWithOutcome).not.toHaveBeenCalled();
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "slack",
+        accountId: "acct-1",
+        to: "channel:C123",
+        content: "The generated image is ready.",
+        mediaUrls: ["/tmp/generated-daily.png"],
+        idempotencyKey: "announce-stale-cron-media:generated-media-direct",
+      }),
+    );
+  });
+
+  it("no-ops stale isolated cron run text completions", async () => {
+    const callGateway = createGatewayMock();
+    const sendMessage = createSendMessageMock();
+    const queueEmbeddedPiMessageWithOutcome = createQueueOutcomeMock(true);
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      sendMessage,
+      queueEmbeddedPiMessageWithOutcome,
+      sessionId: "stale-cron-run-session",
+      isActive: false,
+      requesterSessionKey: "agent:main:cron:daily-text:run:run-123",
+      expectsCompletionMessage: true,
+      directIdempotencyKey: "announce-stale-cron-text",
+      sourceTool: "subagent_announce",
+    });
+
+    expectRecordFields(result, {
+      delivered: true,
+      path: "none",
+      phases: [{ phase: "direct-primary", delivered: true, path: "none", error: undefined }],
+    });
+    expect(queueEmbeddedPiMessageWithOutcome).not.toHaveBeenCalled();
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("directly delivers stale isolated cron run media failure completions", async () => {
+    const callGateway = createGatewayMock({
+      result: {
+        payloads: [{ text: "Image generation failed. Provider timed out." }],
+      },
+    });
+    const sendMessage = createSendMessageMock();
+    const queueEmbeddedPiMessageWithOutcome = createQueueOutcomeMock(true);
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      sendMessage,
+      queueEmbeddedPiMessageWithOutcome,
+      sessionId: "stale-cron-run-session",
+      isActive: false,
+      requesterSessionKey: "agent:main:cron:daily-media:run:run-123",
+      expectsCompletionMessage: true,
+      directIdempotencyKey: "announce-stale-cron-media-failure",
+      sourceTool: "image_generate",
+      internalEvents: [
+        {
+          type: "task_completion",
+          source: "image_generation",
+          childSessionKey: "image_generate:task-123",
+          childSessionId: "task-123",
+          announceType: "image generation task",
+          taskLabel: "daily media",
+          status: "error",
+          statusLabel: "failed",
+          result: "Provider timed out.",
+          replyInstruction: "Tell the user image generation failed.",
+        },
+      ],
+    });
+
+    expectRecordFields(result, {
+      delivered: true,
+      path: "direct",
+    });
+    expect(queueEmbeddedPiMessageWithOutcome).not.toHaveBeenCalled();
+    expectGatewayAgentParams(callGateway, {
+      deliver: true,
+      channel: "slack",
+      accountId: "acct-1",
+      to: "channel:C123",
+      threadId: undefined,
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "legacy Discord channel",
@@ -2230,9 +2448,8 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       });
 
       expectRecordFields(result, {
-        delivered: false,
+        delivered: true,
         path: "direct",
-        error: "completion agent did not deliver through the message tool",
       });
       expectGatewayAgentParams(callGateway, {
         deliver: false,
@@ -2242,7 +2459,16 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         threadId: undefined,
         sourceReplyDeliveryMode: "message_tool_only",
       });
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: origin.channel,
+          accountId: "acct-1",
+          to: origin.to,
+          content: "The generated music is ready.",
+          mediaUrls: ["/tmp/generated-night-drive.mp3"],
+          idempotencyKey: `announce-legacy-media-message-tool-${origin.channel}:generated-media-direct`,
+        }),
+      );
     },
   );
   it("does not fallback for generated media group completions when message tool evidence exists", async () => {

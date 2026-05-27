@@ -22,6 +22,19 @@ function resolveHomePath(value) {
   return value;
 }
 
+function comparablePath(value) {
+  const resolved = path.resolve(resolveHomePath(value));
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function pathsEqual(left, right) {
+  return comparablePath(left) === comparablePath(right);
+}
+
 function getInstallRecords() {
   const index = readInstalledPluginIndex();
   if (!index.installRecords) {
@@ -66,7 +79,7 @@ function rememberPluginInstallPath(params) {
   if (params.source && record.source !== params.source) {
     throw new Error(`unexpected source for ${params.pluginId}: ${record.source}`);
   }
-  if (params.sourcePath && record.sourcePath !== params.sourcePath) {
+  if (params.sourcePath && !pathsEqual(record.sourcePath, params.sourcePath)) {
     throw new Error(
       `unexpected source path for ${params.pluginId}: ${record.sourcePath}, expected ${params.sourcePath}`,
     );
@@ -95,7 +108,8 @@ function assertManagedInstallRemoved(params) {
   if (sourcePath && !fs.existsSync(sourcePath)) {
     throw new Error(`${params.pluginId} source path was deleted during uninstall: ${sourcePath}`);
   }
-  if (installPath !== sourcePath && fs.existsSync(installPath)) {
+  const installPathIsSourcePath = sourcePath ? pathsEqual(installPath, sourcePath) : false;
+  if (!installPathIsSourcePath && fs.existsSync(installPath)) {
     throw new Error(
       `${params.pluginId} managed install path still exists after uninstall: ${installPath}`,
     );
@@ -506,7 +520,7 @@ function assertPluginDirDeps() {
   if (record.source !== "path") {
     throw new Error(`unexpected local dependency plugin source: ${record.source}`);
   }
-  if (record.sourcePath !== sourceDir) {
+  if (!pathsEqual(record.sourcePath, sourceDir)) {
     throw new Error(`unexpected local dependency plugin source path: ${record.sourcePath}`);
   }
   const installPath = resolveHomePath(record.installPath);

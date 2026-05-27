@@ -260,6 +260,37 @@ const applyCostTotal = (totals: CostUsageTotals, costTotal: number | undefined) 
   totals.totalCost += costTotal;
 };
 
+const isModelPricingKnown = (cost: ReturnType<typeof resolveModelCostConfig>): boolean => {
+  if (!cost) {
+    return false;
+  }
+  if (cost.tieredPricing && cost.tieredPricing.length > 0) {
+    return true;
+  }
+  return cost.input > 0 || cost.output > 0 || cost.cacheRead > 0 || cost.cacheWrite > 0;
+};
+
+const hasTokenUsage = (usage: NormalizedUsage): boolean =>
+  computeUsageTokenTotals(usage).totalTokens > 0;
+
+type UsageCostResolver = (params: {
+  provider?: string;
+  model?: string;
+}) => ReturnType<typeof resolveModelCostConfig>;
+
+function createUsageCostResolver(config?: OpenClawConfig): UsageCostResolver {
+  const cache = new Map<string, ReturnType<typeof resolveModelCostConfig>>();
+  return ({ provider, model }) => {
+    const key = `${provider ?? ""}\0${model ?? ""}`;
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+    const cost = resolveModelCostConfig({ provider, model, config });
+    cache.set(key, cost);
+    return cost;
+  };
+}
+
 function resolveUsageSessionScope(params: {
   sessionId?: string;
   sessionEntry?: SessionEntry;
@@ -287,8 +318,10 @@ function resolveUsageSessionScope(params: {
 function scanTranscriptEvents(params: {
   events: SqliteSessionTranscriptEvent[];
   config?: OpenClawConfig;
+  resolveCost?: UsageCostResolver;
   onEntry: (entry: ParsedTranscriptEntry) => void;
 }): void {
+  const resolveCost = params.resolveCost ?? createUsageCostResolver(params.config);
   for (const event of params.events) {
     if (!event.event || typeof event.event !== "object") {
       continue;
@@ -299,19 +332,22 @@ function scanTranscriptEvents(params: {
     }
 
     if (entry.usage) {
-      const cost = resolveModelCostConfig({
+      const cost = resolveCost({
         provider: entry.provider,
         model: entry.model,
-        config: params.config,
       });
-      if (cost?.tieredPricing && cost.tieredPricing.length > 0) {
+      const pricingKnown = isModelPricingKnown(cost);
+      if (!pricingKnown && entry.costTotal === 0 && hasTokenUsage(entry.usage)) {
+        entry.costTotal = undefined;
+        entry.costBreakdown = undefined;
+      } else if (cost?.tieredPricing && cost.tieredPricing.length > 0) {
         // When tiered pricing is configured, always recompute to override
         // the flat-rate cost that the transport layer wrote into the transcript.
         // Clear costBreakdown so downstream aggregation uses the recomputed total
         // instead of the stale flat-rate breakdown from the transport layer.
         entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
         entry.costBreakdown = undefined;
-      } else if (entry.costTotal === undefined) {
+      } else if (pricingKnown && entry.costTotal === undefined) {
         // Fill in missing cost estimates.
         entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
       }
@@ -324,11 +360,13 @@ function scanTranscriptEvents(params: {
 function scanUsageEvents(params: {
   events: SqliteSessionTranscriptEvent[];
   config?: OpenClawConfig;
+  resolveCost?: UsageCostResolver;
   onEntry: (entry: ParsedUsageEntry) => void;
 }): void {
   scanTranscriptEvents({
     events: params.events,
     config: params.config,
+    resolveCost: params.resolveCost,
     onEntry: (entry) => {
       if (!entry.usage) {
         return;
@@ -372,17 +410,17 @@ export async function loadCostUsageSummary(params?: {
 
   const dailyMap = new Map<string, CostUsageTotals>();
   const totals = emptyTotals();
+  const resolveCost = createUsageCostResolver(params?.config);
 
   for (const transcript of listSqliteSessionTranscripts({
     agentId: params?.agentId,
     ...(params?.databasePath ? { path: params.databasePath } : {}),
+    minUpdatedAt: sinceTime,
   })) {
-    if (transcript.updatedAt < sinceTime) {
-      continue;
-    }
     scanUsageEvents({
       events: loadSqliteSessionTranscriptEvents(transcript),
       config: params?.config,
+      resolveCost,
       onEntry: (entry) => {
         const ts = entry.timestamp?.getTime();
         if (!ts || ts < sinceTime || ts > untilTime) {
@@ -503,13 +541,11 @@ export async function discoverAllSessions(params?: {
   const sessions = listSqliteSessionTranscripts({
     agentId: params?.agentId,
     ...(params?.databasePath ? { path: params.databasePath } : {}),
+    minUpdatedAt: params?.startMs,
   });
   const discovered: DiscoveredSession[] = [];
 
   for (const transcript of sessions) {
-    if (params?.startMs && transcript.updatedAt < params.startMs) {
-      continue;
-    }
     let firstUserMessage: string | undefined;
     if (params?.includeFirstUserMessage !== false) {
       for (const event of loadSqliteSessionTranscriptEvents(transcript)) {

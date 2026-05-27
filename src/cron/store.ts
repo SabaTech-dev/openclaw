@@ -7,6 +7,7 @@ import {
   sqliteNullableText,
 } from "../infra/sqlite-row-values.js";
 import type { HookExternalContentSource } from "../security/external-content.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -27,6 +28,16 @@ type CronJobsDatabase = Pick<OpenClawStateKyselyDatabase, "cron_jobs">;
 type CronStoreUpdateDatabase = Pick<OpenClawStateKyselyDatabase, "cron_jobs">;
 
 type CronJobRow = Selectable<CronJobsTable>;
+
+export type PreservedCronConfigJob = {
+  index: number;
+  job: Record<string, unknown>;
+};
+
+export type LoadedCronStore = {
+  store: CronStoreSnapshot;
+  configJobs: Array<Record<string, unknown>>;
+};
 
 type CronJobStateFields = Pick<
   Insertable<CronJobsTable>,
@@ -77,6 +88,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stripRuntimeOnlyCronJobFields(job: CronJob): Record<string, unknown> {
   const { state: _state, updatedAtMs: _updatedAtMs, ...rest } = job;
   return { ...rest, state: {} };
+}
+
+function persistedJobId(job: Record<string, unknown>): string | null {
+  return normalizeOptionalString(job.id) ?? normalizeOptionalString(job.jobId) ?? null;
+}
+
+function preservedConfigJobIds(params: {
+  preservedConfigJobs?: PreservedCronConfigJob[];
+  occupiedJobIds: ReadonlySet<string>;
+}): Set<string> {
+  const result = new Set<string>();
+  for (const entry of params.preservedConfigJobs?.toSorted((a, b) => a.index - b.index) ?? []) {
+    const id = persistedJobId(entry.job);
+    if (!id || params.occupiedJobIds.has(id) || result.has(id)) {
+      continue;
+    }
+    result.add(id);
+  }
+  return result;
 }
 
 export function extractCronRuntimeStateSnapshot(
@@ -196,6 +226,14 @@ function parseJsonRecord(value: string | null): Record<string, unknown> | undefi
   } catch {
     return undefined;
   }
+}
+
+function cronConfigJobFromRow(row: CronJobRow): Record<string, unknown> {
+  const parsed = parseJsonRecord(row.job_json) ?? {};
+  return {
+    ...parsed,
+    id: persistedJobId(parsed) ?? row.job_id,
+  };
 }
 
 function optionalText(value: string | null): string | undefined {
@@ -381,9 +419,24 @@ function mergeCronJobRowRuntimeState(
   });
 }
 
-function hydrateCronStoreFromSqlite(storeKey: string): CronStoreSnapshot {
+function rawCronJobFromRow(row: CronJobRow): CronJob {
+  const job = {
+    ...cronConfigJobFromRow(row),
+    id: row.job_id,
+    name: row.name,
+    enabled: row.enabled !== 0,
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.runtime_updated_at_ms ?? row.updated_at,
+    state: {},
+  } as unknown as CronJob;
+  mergeCronJobRowRuntimeState(job, row);
+  ensureJobStateObject(job);
+  return job;
+}
+
+function loadCronJobRows(storeKey: string): CronJobRow[] {
   const database = openOpenClawStateDatabase();
-  const rows = executeSqliteQuerySync(
+  return executeSqliteQuerySync(
     database.db,
     getCronJobsKysely(database.db)
       .selectFrom("cron_jobs")
@@ -393,11 +446,25 @@ function hydrateCronStoreFromSqlite(storeKey: string): CronStoreSnapshot {
       .orderBy("updated_at", "asc")
       .orderBy("job_id", "asc"),
   ).rows;
-  const jobs = rows.flatMap((row) => {
+}
+
+function hydrateCronStoreFromSqlite(storeKey: string): CronStoreSnapshot {
+  const jobs = loadCronJobRows(storeKey).flatMap((row) => {
     const job = cronJobFromRow(row);
     return job ? [job] : [];
   });
   return { version: 1, jobs };
+}
+
+export async function loadCronStoreWithConfigJobs(storeKey: string): Promise<LoadedCronStore> {
+  const rows = loadCronJobRows(storeKey);
+  return {
+    store: {
+      version: 1,
+      jobs: rows.map(rawCronJobFromRow),
+    },
+    configJobs: rows.map(cronConfigJobFromRow),
+  };
 }
 
 export async function loadCronStore(storeKey: string): Promise<CronStoreSnapshot> {
@@ -521,7 +588,11 @@ function upsertCronJobRow(params: {
   );
 }
 
-function writeCronJobsToSqlite(storeKey: string, store: CronStoreSnapshot): void {
+function writeCronJobsToSqlite(
+  storeKey: string,
+  store: CronStoreSnapshot,
+  opts?: { preservedConfigJobs?: PreservedCronConfigJob[] },
+): void {
   const normalizedStoreKey = cronStoreKey(storeKey);
   runOpenClawStateWriteTransaction((database) => {
     const db = getCronJobsKysely(database.db);
@@ -530,11 +601,15 @@ function writeCronJobsToSqlite(storeKey: string, store: CronStoreSnapshot): void
       db.selectFrom("cron_jobs").select("job_id").where("store_key", "=", normalizedStoreKey),
     ).rows;
     const nextJobIds = new Set(store.jobs.map((job) => job.id));
+    const preservedJobIds = preservedConfigJobIds({
+      preservedConfigJobs: opts?.preservedConfigJobs,
+      occupiedJobIds: nextJobIds,
+    });
     for (const [index, job] of store.jobs.entries()) {
       upsertCronJobRow({ db, sqlite: database.db, row: cronJobRow(storeKey, job, index) });
     }
     for (const row of existingRows) {
-      if (nextJobIds.has(row.job_id)) {
+      if (nextJobIds.has(row.job_id) || preservedJobIds.has(row.job_id)) {
         continue;
       }
       executeSqliteQuerySync(
@@ -601,14 +676,18 @@ export function writeCronRuntimeStateSnapshot(
 export async function saveCronStore(
   storeKey: string,
   store: CronStoreSnapshot,
-  opts?: { skipBackup?: boolean; stateOnly?: boolean },
+  opts?: {
+    skipBackup?: boolean;
+    stateOnly?: boolean;
+    preservedConfigJobs?: PreservedCronConfigJob[];
+  },
 ) {
   void opts?.skipBackup;
   if (opts?.stateOnly === true) {
     writeCronRuntimeStateSnapshot(storeKey, extractCronRuntimeStateSnapshot(store));
     return;
   }
-  writeCronJobsToSqlite(storeKey, store);
+  writeCronJobsToSqlite(storeKey, store, { preservedConfigJobs: opts?.preservedConfigJobs });
 }
 
 export async function updateCronStoreJobs(

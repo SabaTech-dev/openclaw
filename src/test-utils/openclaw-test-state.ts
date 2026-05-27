@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveAuthProfileStoreLocationForDisplay } from "../agents/auth-profiles/paths.js";
 import { savePersistedAuthProfileSecretsStore } from "../agents/auth-profiles/persisted.js";
 import type { AuthProfileSecretsStore } from "../agents/auth-profiles/types.js";
+import { uniqueStrings } from "../shared/string-normalization.js";
 import { captureEnv } from "./env.js";
 import { cleanupOpenClawStateForTest } from "./openclaw-state-cleanup.js";
 
@@ -278,7 +279,7 @@ export async function createOpenClawTestState(
     extraEnv: options.env ?? {},
   });
   const env = createSpawnEnv(envVars);
-  const snapshot = captureEnv([...new Set([...ENV_KEYS, ...Object.keys(envVars)])]);
+  const snapshot = captureEnv(uniqueStrings([...ENV_KEYS, ...Object.keys(envVars)]));
   let envApplied = false;
   let cleaned = false;
   const agentDir = (agentId = "main") => path.join(paths.stateDir, "agents", agentId, "agent");

@@ -22,6 +22,7 @@ import {
   writeDreamingWorkspaceMap,
 } from "openclaw/plugin-sdk/memory-core-host-status";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { normalizeStringEntries, uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { writeDailyDreamingPhaseBlock } from "./dreaming-markdown.js";
 import {
   generateAndAppendDreamNarrative,
@@ -29,10 +30,13 @@ import {
   runDetachedDreamNarrative,
 } from "./dreaming-narrative.js";
 import { asRecord, formatErrorMessage, normalizeTrimmedString } from "./dreaming-shared.js";
+import { textSimilarity as snippetSimilarity } from "./memory/tokenize.js";
 import {
   filterLiveShortTermRecallEntries,
+  readLightStagedKeys,
   readShortTermRecallEntries,
   recordDreamingPhaseSignals,
+  recordRemConsideredPhaseSignals,
   recordShortTermRecalls,
   type ShortTermRecallEntry,
 } from "./short-term-promotion.js";
@@ -560,12 +564,9 @@ function normalizeSessionIngestionState(raw: unknown): SessionIngestionState {
       if (scope.trim().length === 0 || !Array.isArray(value)) {
         continue;
       }
-      const unique = [
+      const unique = normalizeStringEntries([
         ...new Set(value.filter((entry): entry is string => typeof entry === "string")),
-      ]
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(-SESSION_INGESTION_MAX_TRACKED_MESSAGES_PER_SESSION);
+      ]).slice(-SESSION_INGESTION_MAX_TRACKED_MESSAGES_PER_SESSION);
       if (unique.length > 0) {
         seenMessages[scope] = unique;
       }
@@ -701,9 +702,7 @@ function resolveSessionAgentsForWorkspace(params: {
   if (!match) {
     return [];
   }
-  return match.agentIds
-    .filter((agentId, index, all) => agentId.trim().length > 0 && all.indexOf(agentId) === index)
-    .toSorted();
+  return uniqueStrings(match.agentIds.filter((agentId) => agentId.trim().length > 0)).toSorted();
 }
 
 async function appendSessionIngestionLines(params: {
@@ -1223,9 +1222,7 @@ export async function seedHistoricalDailyMemorySignals(params: {
   importedSignalCount: number;
   skippedPaths: string[];
 }> {
-  const normalizedPaths = [
-    ...new Set(params.filePaths.map((entry) => entry.trim()).filter(Boolean)),
-  ];
+  const normalizedPaths = uniqueStrings(normalizeStringEntries(params.filePaths));
   if (normalizedPaths.length === 0) {
     return {
       importedFileCount: 0,
@@ -1341,39 +1338,15 @@ function entryAverageScore(entry: ShortTermRecallEntry): number {
   return signalCount > 0 ? Math.max(0, Math.min(1, entry.totalScore / signalCount)) : 0;
 }
 
-function tokenizeSnippet(snippet: string): Set<string> {
-  return new Set(
-    snippet
-      .toLowerCase()
-      .split(/[^a-z0-9]+/i)
-      .map((token) => token.trim())
-      .filter(Boolean),
-  );
-}
-
-function jaccardSimilarity(left: string, right: string): number {
-  const leftTokens = tokenizeSnippet(left);
-  const rightTokens = tokenizeSnippet(right);
-  if (leftTokens.size === 0 || rightTokens.size === 0) {
-    return left.trim().toLowerCase() === right.trim().toLowerCase() ? 1 : 0;
-  }
-  let intersection = 0;
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) {
-      intersection += 1;
-    }
-  }
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  return union > 0 ? intersection / union : 0;
-}
-
+// Use the shared CJK-aware similarity helper so close-but-not-identical CJK
+// snippets do not slip past the dedupe threshold via the old ASCII-only path.
 function dedupeEntries(entries: ShortTermRecallEntry[], threshold: number): ShortTermRecallEntry[] {
   const deduped: ShortTermRecallEntry[] = [];
   for (const entry of entries) {
     const duplicate = deduped.find(
       (candidate) =>
         candidate.path === entry.path &&
-        jaccardSimilarity(candidate.snippet, entry.snippet) >= threshold,
+        snippetSimilarity(candidate.snippet, entry.snippet) >= threshold,
     );
     if (duplicate) {
       if (entry.recallCount > duplicate.recallCount) {
@@ -1381,11 +1354,11 @@ function dedupeEntries(entries: ShortTermRecallEntry[], threshold: number): Shor
       }
       duplicate.totalScore = Math.max(duplicate.totalScore, entry.totalScore);
       duplicate.maxScore = Math.max(duplicate.maxScore, entry.maxScore);
-      duplicate.queryHashes = [...new Set([...duplicate.queryHashes, ...entry.queryHashes])];
+      duplicate.queryHashes = uniqueStrings([...duplicate.queryHashes, ...entry.queryHashes]);
       duplicate.recallDays = [
         ...new Set([...duplicate.recallDays, ...entry.recallDays]),
       ].toSorted();
-      duplicate.conceptTags = [...new Set([...duplicate.conceptTags, ...entry.conceptTags])];
+      duplicate.conceptTags = uniqueStrings([...duplicate.conceptTags, ...entry.conceptTags]);
       duplicate.lastRecalledAt =
         Date.parse(entry.lastRecalledAt) > Date.parse(duplicate.lastRecalledAt)
           ? entry.lastRecalledAt
@@ -1525,7 +1498,7 @@ export function previewRemDreaming(params: {
     confidence: entry.confidence,
     evidence: entry.evidence,
   }));
-  const candidateKeys = [...new Set(candidateSelections.map((entry) => entry.key))];
+  const candidateKeys = uniqueStrings(candidateSelections.map((entry) => entry.key));
   const bodyLines = [
     "### Reflections",
     ...reflections,
@@ -1616,7 +1589,7 @@ async function runLightDreaming(params: {
   }
   // Generate dream diary narrative from the staged entries.
   if (params.subagent && capped.length > 0) {
-    const themes = [...new Set(capped.flatMap((e) => e.conceptTags).filter(Boolean))];
+    const themes = uniqueStrings(capped.flatMap((e) => e.conceptTags).filter(Boolean));
     const data: NarrativePhaseData = {
       phase: "light",
       snippets: capped.map((e) => e.snippet).filter(Boolean),
@@ -1672,7 +1645,7 @@ async function runRemDreaming(params: {
     nowMs,
     timezone: params.config.timezone,
   });
-  const entries = await filterLiveShortTermRecallEntries({
+  const allEntries = await filterLiveShortTermRecallEntries({
     workspaceDir: params.workspaceDir,
     entries: filterRecallEntriesWithinLookback({
       entries: await readShortTermRecallEntries({ workspaceDir: params.workspaceDir, nowMs }),
@@ -1680,6 +1653,15 @@ async function runRemDreaming(params: {
       lookbackDays: params.config.lookbackDays,
     }),
   });
+  // Prefer entries staged by light sleep so REM synthesises from the
+  // sequential light→REM pipeline instead of rescanning the full store.
+  const lightKeys = await readLightStagedKeys({
+    workspaceDir: params.workspaceDir,
+    nowMs,
+  });
+  const stagedEntries =
+    lightKeys.size > 0 ? allEntries.filter((entry) => lightKeys.has(entry.key)) : [];
+  const entries = stagedEntries.length > 0 ? stagedEntries : allEntries;
   const preview = previewRemDreaming({
     entries,
     limit: params.config.limit,
@@ -1693,6 +1675,13 @@ async function runRemDreaming(params: {
     timezone: params.config.timezone,
     storage: params.config.storage,
   });
+  if (stagedEntries.length > 0) {
+    await recordRemConsideredPhaseSignals({
+      workspaceDir: params.workspaceDir,
+      keys: stagedEntries.map((entry) => entry.key),
+      nowMs,
+    });
+  }
   await recordDreamingPhaseSignals({
     workspaceDir: params.workspaceDir,
     phase: "rem",
@@ -1850,6 +1839,8 @@ export const testing = {
   previewRemDreaming,
   readDailyIngestionState,
   readSessionIngestionState,
+  // Exposed for the #80613 regression test that exercises CJK-aware dedupe.
+  dedupeEntries,
   constants: {
     LIGHT_SLEEP_EVENT_TEXT,
     REM_SLEEP_EVENT_TEXT,

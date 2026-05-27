@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  isRecord,
+  normalizeOptionalString,
+  normalizeStringEntries,
+  uniqueStrings,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMSTeamsSqliteStateEnv, toPluginJsonValue } from "./sqlite-state.js";
 
 type MSTeamsPollVote = {
@@ -70,10 +75,7 @@ function extractSelections(value: unknown): string[] {
     return [];
   }
   if (normalized.includes(",")) {
-    return normalized
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    return normalizeStringEntries(normalized.split(","));
   }
   return [normalized];
 }
@@ -243,7 +245,7 @@ export function normalizeMSTeamsPollSelections(poll: MSTeamsPoll, selections: st
     .filter((value) => value >= 0 && value < poll.options.length)
     .map((value) => String(value));
   const limited = maxSelections > 1 ? mapped.slice(0, maxSelections) : mapped.slice(0, 1);
-  return Array.from(new Set(limited));
+  return uniqueStrings(limited);
 }
 
 export function createMSTeamsPollStoreState(

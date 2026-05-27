@@ -81,6 +81,7 @@ import {
   resolveChunkMode,
   resolveMarkdownTableMode,
   resolveAndPersistSessionFile,
+  resolveStorePath,
   resolveSessionStoreEntry,
 } from "./bot-message-dispatch.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
@@ -264,7 +265,10 @@ function createFreshTelegramSessionStoreLoader(params: {
 }): FreshTelegramSessionStoreLoader {
   const storesByPath = new Map<string, TelegramSessionStore>();
   const load = ((agentId: string) => {
-    const storePath = params.telegramDeps.resolveStorePath(params.cfg.session?.store, { agentId });
+    const storePath = (params.telegramDeps.resolveStorePath ?? resolveStorePath)(
+      params.cfg.session?.store,
+      { agentId },
+    );
     const cachedStore = storesByPath.get(storePath);
     if (cachedStore) {
       return { storePath, store: cachedStore };
@@ -283,6 +287,7 @@ function resolveTelegramReasoningLevel(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
   agentId: string;
+  telegramDeps: TelegramBotDeps;
   loadFreshSessionStore: FreshTelegramSessionStoreLoader;
 }): TelegramReasoningLevel {
   const { cfg, sessionKey, agentId } = params;
@@ -291,6 +296,11 @@ function resolveTelegramReasoningLevel(params: {
     return configDefault;
   }
   try {
+    const directEntry = params.telegramDeps.getSessionEntry({ agentId, sessionKey });
+    const directLevel = directEntry?.reasoningLevel;
+    if (directLevel === "on" || directLevel === "stream" || directLevel === "off") {
+      return directLevel;
+    }
     const { store } = params.loadFreshSessionStore(agentId);
     const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
     const level = entry?.reasoningLevel;
@@ -797,6 +807,7 @@ export const dispatchTelegramMessage = async ({
     cfg,
     sessionKey: ctxPayload.SessionKey,
     agentId: route.agentId,
+    telegramDeps,
     loadFreshSessionStore,
   });
   const forceBlockStreamingForReasoning = resolvedReasoningLevel === "on";
@@ -1258,24 +1269,17 @@ export const dispatchTelegramMessage = async ({
       return undefined;
     }
     try {
-      const { storePath, store } = loadFreshSessionStore(route.agentId);
-      const sessionEntry = resolveSessionStoreEntry({
-        store,
+      const sessionEntry = telegramDeps.getSessionEntry({
+        agentId: route.agentId,
         sessionKey,
-      }).existing;
+      });
       if (!sessionEntry?.sessionId) {
         return undefined;
       }
-      const { sessionFile } = await resolveAndPersistSessionFile({
-        sessionId: sessionEntry.sessionId,
-        sessionKey,
-        sessionStore: store,
-        storePath,
-        sessionEntry,
+      const latest = await readLatestAssistantTextFromSessionTranscript({
         agentId: route.agentId,
-        sessionsDir: path.dirname(storePath),
+        sessionId: sessionEntry.sessionId,
       });
-      const latest = await readLatestAssistantTextFromSessionTranscript(sessionFile);
       if (!latest?.timestamp || latest.timestamp < dispatchStartedAt) {
         return undefined;
       }

@@ -30,6 +30,7 @@ import type { MsgContext } from "../templating.js";
 import { setReplyPayloadMetadata, type GetReplyOptions, type ReplyPayload } from "../types.js";
 import { PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE } from "./provider-request-error-classifier.js";
 import { createReplyDispatcher, type ReplyDispatcher } from "./reply-dispatcher.js";
+import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 type AbortResult = { handled: boolean; aborted: boolean; stoppedSubagents?: number };
@@ -42,6 +43,8 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 const diagnosticMocks = vi.hoisted(() => ({
+  logMessageDispatchCompleted: vi.fn(),
+  logMessageDispatchStarted: vi.fn(),
   logMessageQueued: vi.fn(),
   logMessageProcessed: vi.fn(),
   logSessionStateChange: vi.fn(),
@@ -413,6 +416,8 @@ vi.mock("./abort.runtime.js", () => ({
 }));
 
 vi.mock("../../logging/diagnostic.js", () => ({
+  logMessageDispatchCompleted: diagnosticMocks.logMessageDispatchCompleted,
+  logMessageDispatchStarted: diagnosticMocks.logMessageDispatchStarted,
   logMessageQueued: diagnosticMocks.logMessageQueued,
   logMessageProcessed: diagnosticMocks.logMessageProcessed,
   logSessionStateChange: diagnosticMocks.logSessionStateChange,
@@ -579,6 +584,7 @@ const automaticGroupReplyConfig = {
   },
 } as const satisfies OpenClawConfig;
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
+let dispatchFromConfigTesting: typeof import("./dispatch-from-config.js").testing;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 let tryDispatchAcpReplyHook: typeof import("../../plugin-sdk/acp-runtime.js").tryDispatchAcpReplyHook;
 let createReplyOperation: typeof import("./reply-run-registry.js").createReplyOperation;
@@ -589,7 +595,8 @@ type DispatchReplyArgs = Parameters<
 >[0];
 
 beforeAll(async () => {
-  ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
+  ({ dispatchReplyFromConfig, testing: dispatchFromConfigTesting } =
+    await import("./dispatch-from-config.js"));
   await import("./dispatch-acp.js");
   await import("./dispatch-acp-command-bypass.js");
   await import("./dispatch-acp-tts.runtime.js");
@@ -868,12 +875,48 @@ describe("dispatchReplyFromConfig", () => {
           ),
       },
     };
+    const signalTestPlugin = {
+      ...createChannelTestPluginBase({
+        id: "signal",
+        capabilities: {
+          chatTypes: ["direct"],
+          nativeCommands: true,
+        },
+      }),
+      outbound: {
+        deliveryMode: "direct",
+        shouldSuppressLocalPayloadPrompt: ({
+          cfg,
+          payload,
+          hint,
+        }: {
+          cfg: OpenClawConfig;
+          payload: ReplyPayload;
+          hint?: { kind?: string; approvalKind?: string; nativeRouteActive?: boolean };
+        }) =>
+          hint?.kind === "approval-pending" &&
+          hint.approvalKind === "exec" &&
+          hint.nativeRouteActive === true &&
+          cfg.approvals?.exec?.enabled === true &&
+          Boolean(
+            payload.channelData &&
+            typeof payload.channelData === "object" &&
+            !Array.isArray(payload.channelData) &&
+            payload.channelData.execApproval,
+          ),
+      },
+    };
     setActivePluginRegistry(
       createTestRegistry([
         {
           pluginId: "discord",
           source: "test",
           plugin: discordTestPlugin,
+        },
+        {
+          pluginId: "signal",
+          source: "test",
+          plugin: signalTestPlugin,
         },
       ]),
     );
@@ -932,7 +975,22 @@ describe("dispatchReplyFromConfig", () => {
     sessionBindingMocks.touch.mockReset();
     sessionStoreMocks.currentEntry = undefined;
     sessionStoreMocks.entries.clear();
-    sessionStoreMocks.getSessionEntry.mockClear();
+    sessionStoreMocks.getSessionEntry.mockReset();
+    sessionStoreMocks.getSessionEntry.mockImplementation((params?: { sessionKey?: string }) => {
+      const sessionKey = params?.sessionKey;
+      if (sessionKey && sessionStoreMocks.entries.has(sessionKey)) {
+        return sessionStoreMocks.entries.get(sessionKey);
+      }
+      if (
+        sessionStoreMocks.currentEntry &&
+        (!sessionKey ||
+          typeof sessionStoreMocks.currentEntry.sessionKey !== "string" ||
+          sessionStoreMocks.currentEntry.sessionKey === sessionKey)
+      ) {
+        return sessionStoreMocks.currentEntry;
+      }
+      return undefined;
+    });
     sessionStoreMocks.listSessionEntries.mockClear();
     sessionStoreMocks.mergeSessionEntry.mockClear();
     sessionStoreMocks.upsertSessionEntry.mockClear();
@@ -1258,8 +1316,6 @@ describe("dispatchReplyFromConfig", () => {
       },
       lastThreadId: "stale-origin-root",
     };
-    const cfg = emptyConfig;
-    const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
       Provider: "webchat",
       Surface: "webchat",
@@ -1271,15 +1327,7 @@ describe("dispatchReplyFromConfig", () => {
       ExplicitDeliverRoute: true,
     });
 
-    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
-    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
-
-    const routeCall = firstRouteReplyCall() as
-      | { channel?: unknown; threadId?: unknown; to?: unknown }
-      | undefined;
-    expect(routeCall?.channel).toBe("discord");
-    expect(routeCall?.to).toBe("channel:CHAN1");
-    expect(routeCall?.threadId).toBe("post-root");
+    expect(resolveRoutedDeliveryThreadId({ ctx, sessionKey: ctx.SessionKey })).toBe("post-root");
   });
 
   it("uses Slack DM TransportThreadId when ReplyToId is the current message", async () => {
@@ -1962,43 +2010,15 @@ describe("dispatchReplyFromConfig", () => {
     expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes live group tool-summary state to reply_dispatch hooks", async () => {
-    setNoAbort();
-    sessionStoreMocks.currentEntry = {
-      verboseLevel: "off",
-    };
-    const cfg = automaticGroupReplyConfig;
-    const dispatcher = createDispatcher();
-    const ctx = buildTestCtx({
-      Provider: "matrix",
-      Surface: "matrix",
-      ChatType: "group",
-      From: "matrix:!room:test",
-      SessionKey: "agent:main:matrix:group:!room:test",
-    });
-    let initialHookState: boolean | undefined;
-    let updatedHookState: boolean | undefined;
-    hookMocks.runner.runReplyDispatch.mockImplementationOnce(async (event: unknown) => {
-      const replyDispatchEvent = event as { shouldSendToolSummaries: boolean };
-      initialHookState = replyDispatchEvent.shouldSendToolSummaries;
-      sessionStoreMocks.currentEntry = {
-        verboseLevel: "on",
-      };
-      updatedHookState = replyDispatchEvent.shouldSendToolSummaries;
-      return undefined;
-    });
+  it("exposes live tool-summary state to reply_dispatch hooks", () => {
+    let shouldSendToolSummaries = false;
+    const event = dispatchFromConfigTesting.createReplyDispatchEvent({
+      shouldSendToolSummaries: () => shouldSendToolSummaries,
+    } as never) as { shouldSendToolSummaries: boolean };
 
-    await dispatchReplyFromConfig({
-      ctx,
-      cfg,
-      dispatcher,
-      replyResolver: async () => ({ text: "hi" }) satisfies ReplyPayload,
-      replyOptions: { suppressDefaultToolProgressMessages: true },
-    });
-
-    expect(initialHookState).toBe(false);
-    expect(updatedHookState).toBe(true);
-    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+    expect(event.shouldSendToolSummaries).toBe(false);
+    shouldSendToolSummaries = true;
+    expect(event.shouldSendToolSummaries).toBe(true);
   });
 
   it("normalizes tool-result media before delivery and drops blocked file URLs", async () => {
@@ -2434,6 +2454,7 @@ describe("dispatchReplyFromConfig", () => {
     sessionStoreMocks.currentEntry = {
       verboseLevel: "off",
     };
+    sessionStoreMocks.getSessionEntry.mockReturnValue({ verboseLevel: "on" });
     const cfg = {
       ...emptyConfig,
       agents: {
@@ -4112,6 +4133,159 @@ describe("dispatchReplyFromConfig", () => {
       await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
 
       expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
+      expect(firstFinalReplyPayload(dispatcher)?.text).toBe("done");
+    } finally {
+      await reporter.stop();
+    }
+  });
+
+  it("keeps local signal exec approval tool prompts when the native runtime is inactive", async () => {
+    setNoAbort();
+    const cfg = {
+      channels: {
+        signal: {
+          enabled: true,
+        },
+      },
+      approvals: {
+        exec: {
+          enabled: true,
+        },
+      },
+    } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "signal",
+      Surface: "signal",
+      AccountId: "default",
+      SessionKey: "agent:main:signal:+15551230000",
+    });
+    const replyResolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+      await options?.onToolResult?.({
+        text: "Approval required.",
+        channelData: {
+          execApproval: {
+            approvalId: "12345678-1234-1234-1234-123456789012",
+            approvalSlug: "12345678",
+            approvalKind: "exec",
+            sessionKey: "agent:main:signal:+15551230000",
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+          },
+        },
+      });
+      return { text: "done" } as ReplyPayload;
+    });
+
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(firstToolResultPayload(dispatcher)?.text).toBe("Approval required.");
+    expect(firstFinalReplyPayload(dispatcher)?.text).toBe("done");
+  });
+
+  it("suppresses local signal exec approval tool prompts when the native runtime is active", async () => {
+    setNoAbort();
+    const cfg = {
+      channels: {
+        signal: {
+          enabled: true,
+        },
+      },
+      approvals: {
+        exec: {
+          enabled: true,
+        },
+      },
+    } as OpenClawConfig;
+    const reporter = createApprovalNativeRouteReporter({
+      handledKinds: new Set(["exec"]),
+      channel: "signal",
+      channelLabel: "Signal",
+      accountId: "default",
+      requestGateway: async <T>() => ({ ok: true }) as T,
+    });
+    reporter.start();
+    try {
+      const dispatcher = createDispatcher();
+      const ctx = buildTestCtx({
+        Provider: "signal",
+        Surface: "signal",
+        AccountId: "default",
+        SessionKey: "agent:main:signal:+15551230000",
+      });
+      const replyResolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+        await options?.onToolResult?.({
+          text: "Approval required.",
+          channelData: {
+            execApproval: {
+              approvalId: "12345678-1234-1234-1234-123456789012",
+              approvalSlug: "12345678",
+              approvalKind: "exec",
+              sessionKey: "agent:main:signal:+15551230000",
+              allowedDecisions: ["allow-once", "allow-always", "deny"],
+            },
+          },
+        });
+        return { text: "done" } as ReplyPayload;
+      });
+
+      await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+      expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
+      expect(firstFinalReplyPayload(dispatcher)?.text).toBe("done");
+    } finally {
+      await reporter.stop();
+    }
+  });
+
+  it("keeps local signal exec approval tool prompts when top-level exec approvals are disabled", async () => {
+    setNoAbort();
+    const cfg = {
+      channels: {
+        signal: {
+          enabled: true,
+        },
+      },
+      approvals: {
+        exec: {
+          enabled: false,
+        },
+      },
+    } as OpenClawConfig;
+    const reporter = createApprovalNativeRouteReporter({
+      handledKinds: new Set(["exec"]),
+      channel: "signal",
+      channelLabel: "Signal",
+      accountId: "default",
+      requestGateway: async <T>() => ({ ok: true }) as T,
+    });
+    reporter.start();
+    try {
+      const dispatcher = createDispatcher();
+      const ctx = buildTestCtx({
+        Provider: "signal",
+        Surface: "signal",
+        AccountId: "default",
+        SessionKey: "agent:main:signal:+15551230000",
+      });
+      const replyResolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+        await options?.onToolResult?.({
+          text: "Approval required.",
+          channelData: {
+            execApproval: {
+              approvalId: "12345678-1234-1234-1234-123456789012",
+              approvalSlug: "12345678",
+              approvalKind: "exec",
+              sessionKey: "agent:main:signal:+15551230000",
+              allowedDecisions: ["allow-once", "allow-always", "deny"],
+            },
+          },
+        });
+        return { text: "done" } as ReplyPayload;
+      });
+
+      await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+      expect(firstToolResultPayload(dispatcher)?.text).toBe("Approval required.");
       expect(firstFinalReplyPayload(dispatcher)?.text).toBe("done");
     } finally {
       await reporter.stop();
@@ -7032,20 +7206,20 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
     const parentSessionKey = "agent:main:telegram:direct:U1";
     const childSessionKey = `${parentSessionKey}:thread:topic-1`;
-    sessionStoreMocks.currentEntry = {
+    const childEntry = {
       sessionId: "child",
       updatedAt: 0,
       agentHarnessId: "codex",
       parentSessionKey,
       sendPolicy: "allow",
     };
-    sessionStoreMocks.loadSessionStore.mockReturnValueOnce({
-      [parentSessionKey]: {
-        sessionId: "parent",
-        updatedAt: 0,
-        providerOverride: "anthropic",
-        modelOverride: "claude-sonnet-4.6",
-      },
+    sessionStoreMocks.currentEntry = childEntry;
+    sessionStoreMocks.entries.set(childSessionKey, childEntry);
+    sessionStoreMocks.entries.set(parentSessionKey, {
+      sessionId: "parent",
+      updatedAt: 0,
+      providerOverride: "anthropic",
+      modelOverride: "claude-sonnet-4.6",
     });
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {

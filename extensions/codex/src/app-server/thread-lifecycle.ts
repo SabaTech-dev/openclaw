@@ -69,6 +69,8 @@ export type CodexPluginThreadConfigProvider = {
   build: () => Promise<CodexPluginThreadConfig>;
 };
 
+export const CODEX_NATIVE_PERSONALITY_NONE = "none";
+
 export const CODEX_CODE_MODE_THREAD_CONFIG: JsonObject = {
   "features.code_mode": true,
   "features.code_mode_only": false,
@@ -619,6 +621,7 @@ export function buildThreadStartParams(
     approvalsReviewer: options.appServer.approvalsReviewer,
     sandbox: options.appServer.sandbox,
     ...(options.appServer.serviceTier ? { serviceTier: options.appServer.serviceTier } : {}),
+    personality: CODEX_NATIVE_PERSONALITY_NONE,
     serviceName: "OpenClaw",
     config: buildCodexRuntimeThreadConfigForRun(params, options.config, {
       nativeCodeModeEnabled: options.nativeCodeModeEnabled,
@@ -662,6 +665,7 @@ export function buildThreadResumeParams(
     approvalsReviewer: options.appServer.approvalsReviewer,
     sandbox: options.appServer.sandbox,
     ...(options.appServer.serviceTier ? { serviceTier: options.appServer.serviceTier } : {}),
+    personality: CODEX_NATIVE_PERSONALITY_NONE,
     config: buildCodexRuntimeThreadConfigForRun(params, options.config, {
       nativeCodeModeEnabled: options.nativeCodeModeEnabled,
       nativeCodeModeOnlyEnabled: options.nativeCodeModeOnlyEnabled,
@@ -744,6 +748,7 @@ export function buildTurnStartParams(
     sandboxPolicy:
       options.sandboxPolicy ?? codexSandboxPolicyForTurn(options.appServer.sandbox, options.cwd),
     model: params.modelId,
+    personality: CODEX_NATIVE_PERSONALITY_NONE,
     ...(options.appServer.serviceTier ? { serviceTier: options.appServer.serviceTier } : {}),
     effort: resolveReasoningEffort(params.thinkLevel, params.modelId),
     ...(options.environmentSelection ? { environments: options.environmentSelection } : {}),
@@ -1031,7 +1036,7 @@ export function resolveCodexAppServerModelProvider(params: {
   return normalizedLower === "openai-codex" ? "openai" : normalized;
 }
 
-// Modern Codex models (gpt-5.5, gpt-5.4, gpt-5.4-mini) use the
+// Modern Codex models (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex-spark) use the
 // none/low/medium/high/xhigh effort enum and reject "minimal". The CLI
 // defaults thinkLevel to "minimal", so without translation EVERY agent turn
 // on those models pays a wasted first request + retry-with-low fallback in

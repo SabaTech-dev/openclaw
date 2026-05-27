@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { resolveAuthStorePath } from "./auth-profiles/path-resolve.js";
 import { authProfileStoreKey } from "./auth-profiles/persisted.js";
 import {
   readAuthProfileStatePayloadResult,
@@ -19,9 +18,23 @@ import {
 } from "./auth-profiles/store.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 
+const externalAuthMocks = vi.hoisted(() => ({
+  listRuntimeExternalAuthProfiles: vi.fn((params?: { store?: unknown }) => {
+    const store = params?.store as { profiles?: Record<string, unknown> } | undefined;
+    return Object.entries(store?.profiles ?? {})
+      .filter(([, credential]) => (credential as { type?: string }).type === "oauth")
+      .map(([profileId, credential]) => ({
+        profileId,
+        credential,
+        persistence: "persisted",
+      }));
+  }),
+  overlayExternalAuthProfiles: vi.fn((store: unknown) => store),
+}));
+
 vi.mock("./auth-profiles/external-auth.js", () => ({
-  overlayExternalAuthProfiles: <T>(store: T) => store,
-  shouldPersistExternalAuthProfile: () => true,
+  listRuntimeExternalAuthProfiles: externalAuthMocks.listRuntimeExternalAuthProfiles,
+  overlayExternalAuthProfiles: externalAuthMocks.overlayExternalAuthProfiles,
   syncPersistedExternalCliAuthProfiles: <T>(store: T) => store,
 }));
 
@@ -62,6 +75,8 @@ describe("saveAuthProfileStore", () => {
   beforeEach(async () => {
     stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-auth-save-state-root-"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateRoot);
+    externalAuthMocks.listRuntimeExternalAuthProfiles.mockClear();
+    externalAuthMocks.overlayExternalAuthProfiles.mockImplementation((store) => store);
   });
 
   afterEach(async () => {
@@ -134,31 +149,25 @@ describe("saveAuthProfileStore", () => {
 
   it("preserves legacy oauthRef only as doctor migration metadata during saves", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-auth-save-oauth-ref-"));
-    const authPath = resolveAuthStorePath(agentDir);
     const oauthRef = {
       source: "openclaw-credentials",
       provider: "openai-codex",
       id: "0123456789abcdef0123456789abcdef",
     };
     try {
-      await fs.mkdir(agentDir, { recursive: true });
-      await fs.writeFile(
-        authPath,
-        `${JSON.stringify(
-          {
-            version: 1,
-            profiles: {
-              "openai-codex:default": {
-                type: "oauth",
-                provider: "openai-codex",
-                expires: Date.now() + 60_000,
-                oauthRef,
-              },
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: {
+            "openai-codex:default": {
+              type: "oauth",
+              provider: "openai-codex",
+              expires: Date.now() + 60_000,
+              oauthRef,
             },
           },
-          null,
-          2,
-        )}\n`,
+        } as unknown as AuthProfileStore,
+        agentDir,
       );
 
       const legacyRuntimeStore = {
@@ -174,7 +183,7 @@ describe("saveAuthProfileStore", () => {
 
       saveAuthProfileStore(legacyRuntimeStore, agentDir);
 
-      let parsed = JSON.parse(await fs.readFile(authPath, "utf8")) as {
+      let parsed = readRawPersistedAuthProfiles(agentDir) as {
         profiles: Record<string, Record<string, unknown>>;
       };
       expect(parsed.profiles["openai-codex:default"]?.oauthRef).toEqual(oauthRef);
@@ -198,12 +207,12 @@ describe("saveAuthProfileStore", () => {
         agentDir,
       );
 
-      parsed = JSON.parse(await fs.readFile(authPath, "utf8")) as {
+      parsed = readRawPersistedAuthProfiles(agentDir) as {
         profiles: Record<string, Record<string, unknown>>;
       };
-      expect(parsed.profiles["openai-codex:default"]?.oauthRef).toEqual(oauthRef);
-      expect(parsed.profiles["openai-codex:default"]).not.toHaveProperty("access");
-      expect(parsed.profiles["openai-codex:default"]).not.toHaveProperty("refresh");
+      expect(parsed.profiles["openai-codex:default"]).not.toHaveProperty("oauthRef");
+      expect(parsed.profiles["openai-codex:default"]?.access).toBe("new-access-token");
+      expect(parsed.profiles["openai-codex:default"]?.refresh).toBe("new-refresh-token");
     } finally {
       clearRuntimeAuthProfileStoreSnapshots();
       await fs.rm(agentDir, { recursive: true, force: true });

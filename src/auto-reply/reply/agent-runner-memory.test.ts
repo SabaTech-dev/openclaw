@@ -22,6 +22,7 @@ import {
   readTestSessionRow,
   writeTestSessionRow,
 } from "./agent-runner.test-fixtures.js";
+import type { ReplyOperation } from "./reply-run-registry.js";
 
 const compactEmbeddedPiSessionMock = vi.fn();
 const runWithModelFallbackMock = vi.fn();
@@ -35,12 +36,31 @@ function registerMemoryFlushPlanResolverForTest(resolver: MemoryFlushPlanResolve
   registerMemoryCapability("memory-core", { flushPlanResolver: resolver });
 }
 
-function createReplyOperation() {
+type TestReplyOperation = ReplyOperation & {
+  setPhase: ReturnType<typeof vi.fn<ReplyOperation["setPhase"]>>;
+  updateSessionId: ReturnType<typeof vi.fn<ReplyOperation["updateSessionId"]>>;
+};
+
+function createReplyOperation(): TestReplyOperation {
   return {
+    key: "test",
+    sessionId: "session",
     abortSignal: new AbortController().signal,
-    setPhase: vi.fn(),
-    updateSessionId: vi.fn(),
-  } as never;
+    resetTriggered: false,
+    phase: "queued",
+    result: null,
+    setPhase: vi.fn<ReplyOperation["setPhase"]>(),
+    updateSessionId: vi.fn<ReplyOperation["updateSessionId"]>(),
+    attachBackend: vi.fn(),
+    detachBackend: vi.fn(),
+    complete: vi.fn(),
+    completeThen: vi.fn((afterClear: () => void) => {
+      afterClear();
+    }),
+    fail: vi.fn(),
+    abortByUser: vi.fn(),
+    abortForRestart: vi.fn(),
+  };
 }
 
 type RefreshQueuedFollowupSessionParams = {
@@ -82,6 +102,7 @@ type CompactEmbeddedPiSessionParams = {
   sessionKey?: string;
   sandboxSessionKey?: string;
   currentTokenCount?: number;
+  contextTokenBudget?: number;
   sessionId?: string;
   trigger?: string;
 };
@@ -699,6 +720,115 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactCall.sandboxSessionKey).toBe("agent:main:telegram:default:direct:12345");
   });
 
+  it.each([
+    ["stale_thread_binding", "thread not found: <codex-thread-id>"],
+    ["missing_thread_binding", "no thread binding for session"],
+  ])(
+    "continues after recoverable native harness %s failure during preflight compaction",
+    async (failureReason, reason) => {
+      appendSqliteSessionTranscriptEvent({
+        agentId: "main",
+        sessionId: "session",
+        event: {
+          type: "message",
+          id: "m1",
+          message: { role: "user", content: "x".repeat(5_000) },
+        },
+      });
+      registerMemoryFlushPlanResolverForTest(() => ({
+        softThresholdTokens: 1,
+        forceFlushTranscriptBytes: 1_000_000_000,
+        reserveTokensFloor: 0,
+        prompt: "Pre-compaction memory flush.\nNO_REPLY",
+        systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+        relativePath: "memory/2023-11-14.md",
+      }));
+      compactEmbeddedPiSessionMock.mockResolvedValueOnce({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+      const sessionEntry: SessionEntry = {
+        sessionId: "session",
+        updatedAt: Date.now(),
+        totalTokensFresh: false,
+      };
+      const sessionStore = { "agent:main:telegram:group:redacted": sessionEntry };
+
+      const entry = await runPreflightCompactionIfNeeded({
+        cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
+        followupRun: createTestFollowupRun({
+          sessionId: "session",
+          sessionKey: "agent:main:telegram:group:redacted",
+        }),
+        defaultModel: "anthropic/claude-opus-4-6",
+        agentCfgContextTokens: 100,
+        sessionEntry,
+        sessionStore,
+        sessionKey: "agent:main:telegram:group:redacted",
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      });
+
+      expect(entry).toBe(sessionEntry);
+      expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+      expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still fails preflight compaction for non-binding native harness failures", async () => {
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(5_000) },
+      },
+    });
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 1,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    compactEmbeddedPiSessionMock.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "auth profile mismatch",
+      failure: { reason: "auth_profile_mismatch" },
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokensFresh: false,
+    };
+    const sessionStore = { "agent:main:telegram:group:redacted": sessionEntry };
+
+    await expect(
+      runPreflightCompactionIfNeeded({
+        cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
+        followupRun: createTestFollowupRun({
+          sessionId: "session",
+          sessionKey: "agent:main:telegram:group:redacted",
+        }),
+        defaultModel: "anthropic/claude-opus-4-6",
+        agentCfgContextTokens: 100,
+        sessionEntry,
+        sessionStore,
+        sessionKey: "agent:main:telegram:group:redacted",
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+      }),
+    ).rejects.toThrow("Preflight compaction required but failed: auth profile mismatch");
+
+    expect(compactEmbeddedPiSessionMock).toHaveBeenCalledTimes(1);
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+  });
+
   it("updates the active preflight run after transcript rotation", async () => {
     appendSqliteSessionTranscriptEvent({
       agentId: "main",
@@ -735,12 +865,7 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionId: "session",
       sessionKey: "agent:main:main",
     });
-    const updateSessionId = vi.fn();
-    const replyOperation = {
-      abortSignal: new AbortController().signal,
-      setPhase: vi.fn(),
-      updateSessionId,
-    } as never;
+    const replyOperation = createReplyOperation();
 
     const entry = await runPreflightCompactionIfNeeded({
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
@@ -756,7 +881,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(entry?.sessionId).toBe("session-rotated");
     expect(followupRun.run.sessionId).toBe("session-rotated");
-    expect(updateSessionId).toHaveBeenCalledWith("session-rotated");
+    expect(replyOperation.updateSessionId).toHaveBeenCalledWith("session-rotated");
     expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
       key: "agent:main:main",
       previousSessionId: "session",
@@ -992,6 +1117,161 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(entry).toBe(sessionEntry);
     expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("defers OpenAI preflight compaction until the configured server threshold", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 60_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 161_077,
+      totalTokensFresh: true,
+      agentRuntimeOverride: "pi",
+    };
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.5": {
+                params: {
+                  responsesCompactThreshold: 200_000,
+                },
+              },
+            },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      agentCfgContextTokens: 220_000,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedPiSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("runs OpenAI preflight compaction at the configured server threshold", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 60_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 201_000,
+      totalTokensFresh: true,
+      agentRuntimeOverride: "pi",
+    };
+
+    await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.5": {
+                params: {
+                  responsesServerCompaction: true,
+                  responsesCompactThreshold: 200_000,
+                },
+              },
+            },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      agentCfgContextTokens: 220_000,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    const compactCall = requireCompactEmbeddedPiSessionCall();
+    expect(compactCall.currentTokenCount).toBe(201_000);
+  });
+
+  it("uses the local preflight threshold when OpenAI server compaction is explicitly disabled", async () => {
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 4_000,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 60_000,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 161_077,
+      totalTokensFresh: true,
+      agentRuntimeOverride: "pi",
+    };
+
+    await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.5": {
+                params: {
+                  responsesServerCompaction: false,
+                  responsesCompactThreshold: 200_000,
+                },
+              },
+            },
+            compaction: { memoryFlush: {} },
+          },
+        },
+      } as never,
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey: "main",
+      }),
+      defaultModel: "gpt-5.5",
+      agentCfgContextTokens: 220_000,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    const compactCall = requireCompactEmbeddedPiSessionCall();
+    expect(compactCall.currentTokenCount).toBe(161_077);
   });
 
   it("uses the active run session id when the session entry only has canonical state", async () => {

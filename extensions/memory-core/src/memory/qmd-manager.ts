@@ -50,6 +50,7 @@ import { withOpenClawStateLock } from "openclaw/plugin-sdk/sqlite-state-lock";
 import {
   localeLowercasePreservingWhitespace,
   normalizeLowercaseStringOrEmpty,
+  uniqueValues,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { asRecord } from "../dreaming-shared.js";
@@ -1120,7 +1121,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       this.qmd.limits.maxResults,
       opts?.maxResults ?? this.qmd.limits.maxResults,
     );
-    const requestedSources = opts?.sources?.length ? [...new Set(opts.sources)] : undefined;
+    const requestedSources = opts?.sources?.length ? uniqueValues(opts.sources) : undefined;
     const collectionNames = this.listManagedCollectionNames(requestedSources);
     const limit = resultLimit;
     if (collectionNames.length === 0) {
@@ -1405,6 +1406,8 @@ export class QmdMemoryManager implements MemorySearchManager {
         qmd: {
           collections: this.qmd.collections.length,
           lastUpdateAt: this.lastUpdateAt,
+          embedFailures: this.embedFailureCount,
+          embedBackoffUntil: this.embedBackoffUntil,
         },
       },
     };

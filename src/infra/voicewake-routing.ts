@@ -3,6 +3,8 @@ import {
   isValidAgentId,
   normalizeAgentId,
 } from "../routing/session-key.js";
+import { isRecord as isPlainObject } from "../shared/record-coerce.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -78,14 +80,6 @@ export function normalizeVoiceWakeTriggerWord(value: string): string {
     .map((token) => token.replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, ""))
     .filter(Boolean)
     .join(" ");
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
 }
 
 function normalizeRouteTarget(value: unknown): VoiceWakeRouteTarget | null {
@@ -170,10 +164,6 @@ function isCanonicalAgentSessionKey(value: string): boolean {
     return false;
   }
   return !trimmed.split(":").some((part) => part.length === 0);
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function validateRouteTargetInput(

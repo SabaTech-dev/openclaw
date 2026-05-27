@@ -1,5 +1,6 @@
 import { getRuntimeConfig } from "../config/config.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { normalizeStringEntries } from "../shared/string-normalization.js";
 import { resolveDefaultAgentDir } from "./agent-scope.js";
 import { collectProviderApiKeys } from "./live-auth-keys.js";
 import { isLiveTestEnabled } from "./live-test-helpers.js";
@@ -122,11 +123,9 @@ export function buildStableCachePrefix(tag: string, sections = 160): string {
 }
 
 export function extractAssistantText(message: AssistantMessage): string {
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join(" ");
+  return normalizeStringEntries(
+    message.content.filter((block) => block.type === "text").map((block) => block.text),
+  ).join(" ");
 }
 
 export function buildAssistantHistoryTurn(

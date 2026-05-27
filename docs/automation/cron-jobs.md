@@ -434,8 +434,7 @@ Model override note:
 {
   cron: {
     enabled: true,
-    store: "~/.openclaw/cron/jobs.json", // optional legacy import key
-    maxConcurrentRuns: 1,
+    maxConcurrentRuns: 8,
     retry: {
       maxAttempts: 3,
       backoffMs: [60000, 120000, 300000],
@@ -447,9 +446,9 @@ Model override note:
 }
 ```
 
-`maxConcurrentRuns` limits both scheduled cron dispatch and isolated agent-turn execution. Isolated cron agent turns use the queue's dedicated `cron-nested` execution lane internally, so raising this value lets independent cron LLM runs progress in parallel instead of only starting their outer cron wrappers. The shared non-cron `nested` lane is not widened by this setting.
+`maxConcurrentRuns` limits both scheduled cron dispatch and isolated agent-turn execution, and defaults to 8. Isolated cron agent turns use the queue's dedicated `cron-nested` execution lane internally, so raising this value lets independent cron LLM runs progress in parallel instead of only starting their outer cron wrappers. The shared non-cron `nested` lane is not widened by this setting.
 
-Cron data is keyed by the resolved `cron.store` value inside the shared SQLite state database. That value is a legacy import key, not a runtime JSON write path. SQLite stores job definitions, pending slots, active markers, last-run metadata, and the schedule identity used to invalidate stale pending slots after a job update.
+Cron data is keyed inside the shared SQLite state database. SQLite stores job definitions, pending slots, active markers, last-run metadata, and the schedule identity used to invalidate stale pending slots after a job update.
 
 Run `openclaw doctor --fix` once after upgrading from an older version so doctor can import and remove legacy `jobs.json` and `jobs-state.json` files.
 

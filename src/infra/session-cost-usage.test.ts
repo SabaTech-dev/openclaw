@@ -1,10 +1,13 @@
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { replaceSqliteSessionTranscriptEvents } from "../config/sessions/transcript-store.sqlite.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { clearGatewayModelPricingCacheState } from "../gateway/model-pricing-cache-state.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import * as usageFormat from "../utils/usage-format.js";
 import {
   discoverAllSessions,
   loadCostUsageSummary,
@@ -199,6 +202,123 @@ describe("session cost usage", () => {
     });
   });
 
+  it("reuses resolved model costs while scanning repeated SQLite usage entries", async () => {
+    const root = await makeRoot("resolver-cache");
+    await withStateDir(root, async () => {
+      writeTranscript({
+        sessionId: "sess-repeated",
+        events: Array.from({ length: 12 }, () =>
+          assistantUsage({
+            timestamp: "2026-02-05T12:00:00.000Z",
+            input: 10,
+            output: 20,
+          }),
+        ),
+      });
+
+      const config = {
+        models: {
+          providers: {
+            openai: {
+              models: [
+                {
+                  id: "gpt-5.4",
+                  cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+                },
+              ],
+            },
+          },
+        },
+      } as unknown as OpenClawConfig;
+
+      const costSpy = vi.spyOn(usageFormat, "resolveModelCostConfig");
+      try {
+        const summary = await loadCostUsageSummary({
+          startMs: Date.parse("2026-02-05T00:00:00.000Z"),
+          endMs: Date.parse("2026-02-06T00:00:00.000Z"),
+          config,
+        });
+        expect(summary.totals.totalTokens).toBe(360);
+        expect(summary.totals.totalCost).toBeCloseTo(0.0006, 8);
+        expect(costSpy.mock.calls.length).toBeLessThanOrEqual(2);
+      } finally {
+        costSpy.mockRestore();
+      }
+    });
+  });
+
+  it("counts token usage for an unpriced zero-cost model as missing", async () => {
+    const root = await makeRoot("unknown-zero");
+    await withStateDir(root, async () => {
+      clearGatewayModelPricingCacheState();
+      writeTranscript({
+        sessionId: "sess-unknown-zero",
+        events: [
+          assistantUsage({
+            timestamp: "2026-02-05T12:00:00.000Z",
+            input: 881,
+            output: 6,
+            totalTokens: 23287,
+            cost: 0,
+            model: "gpt-5.5",
+          }),
+        ],
+      });
+
+      const summary = await loadCostUsageSummary({
+        startMs: Date.parse("2026-02-05T00:00:00.000Z"),
+        endMs: Date.parse("2026-02-06T00:00:00.000Z"),
+      });
+      expect(summary.totals.totalTokens).toBe(23287);
+      expect(summary.totals.totalCost).toBe(0);
+      expect(summary.totals.missingCostEntries).toBe(1);
+    });
+  });
+
+  it("counts token usage for a configured all-zero model as missing", async () => {
+    const root = await makeRoot("configured-zero");
+    await withStateDir(root, async () => {
+      clearGatewayModelPricingCacheState();
+      writeTranscript({
+        sessionId: "sess-configured-zero",
+        events: [
+          assistantUsage({
+            timestamp: "2026-02-05T12:00:00.000Z",
+            input: 881,
+            output: 6,
+            totalTokens: 23287,
+            cost: 0,
+            model: "gpt-5.5",
+          }),
+        ],
+      });
+
+      const config = {
+        models: {
+          providers: {
+            openai: {
+              models: [
+                {
+                  id: "gpt-5.5",
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                },
+              ],
+            },
+          },
+        },
+      } as unknown as OpenClawConfig;
+
+      const summary = await loadCostUsageSummary({
+        startMs: Date.parse("2026-02-05T00:00:00.000Z"),
+        endMs: Date.parse("2026-02-06T00:00:00.000Z"),
+        config,
+      });
+      expect(summary.totals.totalTokens).toBe(23287);
+      expect(summary.totals.totalCost).toBe(0);
+      expect(summary.totals.missingCostEntries).toBe(1);
+    });
+  });
+
   it("loads session summary, time series, and logs by agent/session id", async () => {
     const root = await makeRoot("session");
     await withStateDir(root, async () => {
@@ -340,8 +460,9 @@ describe("session cost usage", () => {
         ],
       });
 
-      expect(await loadSessionCostSummary({ agentId: "worker", sessionId: "sess-relocated" }))
-        .toBeNull();
+      expect(
+        await loadSessionCostSummary({ agentId: "worker", sessionId: "sess-relocated" }),
+      ).toBeNull();
 
       const summary = await loadSessionCostSummary({
         agentId: "worker",

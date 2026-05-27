@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -97,7 +98,9 @@ describe("session-compaction-checkpoints", () => {
     expect(snapshot).not.toBeNull();
     expect(snapshot?.agentId).toBe(DEFAULT_AGENT_ID);
     expect(snapshot?.sourceSessionId).toBe(session.getSessionId());
+    expect(snapshot?.sessionFile).toBeUndefined();
     expect(snapshot?.leafId).toBe(leafId);
+    expect(fsSync.readdirSync(dir).some((file) => file.includes(".checkpoint."))).toBe(false);
     expect(
       hasSqliteSessionTranscriptSnapshot({
         agentId: DEFAULT_AGENT_ID,

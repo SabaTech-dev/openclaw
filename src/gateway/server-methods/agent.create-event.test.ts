@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { clearActiveSessionsForShutdownTracker } from "../active-sessions-shutdown-tracker.js";
 
 const configMocks = vi.hoisted(() => ({
   workspaceDir: "",
@@ -60,6 +61,7 @@ describe("agent handler session create events", () => {
   afterEach(async () => {
     closeOpenClawAgentDatabasesForTest();
     vi.unstubAllEnvs();
+    clearActiveSessionsForShutdownTracker();
     await fs.rm(tempDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });

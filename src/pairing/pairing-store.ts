@@ -8,6 +8,7 @@ import { resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
+import { isRecord } from "../shared/record-coerce.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeNullableString,
@@ -67,6 +68,48 @@ function parseTimestamp(value: string | undefined): number | null {
     return null;
   }
   return parsed;
+}
+
+function normalizePersistedPairingMeta(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const normalized = normalizeOptionalString(entry);
+    if (normalized) {
+      out[key] = normalized;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizePersistedPairingRequest(value: unknown): PairingRequest | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const id = normalizeOptionalString(value.id);
+  const code = normalizeOptionalString(value.code);
+  const createdAt = normalizeOptionalString(value.createdAt);
+  const lastSeenAt = normalizeOptionalString(value.lastSeenAt) ?? createdAt;
+  if (
+    !id ||
+    !code ||
+    !createdAt ||
+    !lastSeenAt ||
+    parseTimestamp(createdAt) === null ||
+    parseTimestamp(lastSeenAt) === null
+  ) {
+    return undefined;
+  }
+  const meta = normalizePersistedPairingMeta(value.meta);
+  return {
+    id,
+    code,
+    createdAt,
+    lastSeenAt,
+    ...(meta ? { meta } : {}),
+  };
 }
 
 function isExpired(entry: PairingRequest, nowMs: number): boolean {
@@ -264,30 +307,22 @@ function readChannelPairingStateFromDatabase(
   return {
     version: 1,
     requests: requestRows.flatMap((row) => {
-      let meta: Record<string, string> | undefined;
+      let rawMeta: unknown;
       if (row.meta_json) {
         try {
-          const parsed = JSON.parse(row.meta_json);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            meta = Object.fromEntries(
-              Object.entries(parsed)
-                .map(([key, value]) => [key, normalizeOptionalString(value) ?? ""] as const)
-                .filter(([_, value]) => Boolean(value)),
-            );
-          }
+          rawMeta = JSON.parse(row.meta_json);
         } catch {
-          meta = undefined;
+          rawMeta = undefined;
         }
       }
-      return [
-        {
-          id: row.request_id,
-          code: row.code,
-          createdAt: row.created_at,
-          lastSeenAt: row.last_seen_at,
-          ...(meta ? { meta } : {}),
-        } satisfies PairingRequest,
-      ];
+      const normalized = normalizePersistedPairingRequest({
+        id: row.request_id,
+        code: row.code,
+        createdAt: row.created_at,
+        lastSeenAt: row.last_seen_at,
+        meta: rawMeta,
+      });
+      return normalized ? [normalized] : [];
     }),
     allowFrom,
   };

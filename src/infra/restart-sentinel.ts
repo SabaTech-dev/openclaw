@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Insertable, Selectable } from "kysely";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveStateDir } from "../config/paths.js";
+import { isRecord as isPlainRecord } from "../shared/record-coerce.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -215,10 +216,6 @@ export async function writeRestartSentinel(
   return filePath;
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
 function cloneRestartSentinelPayload(payload: RestartSentinelPayload): RestartSentinelPayload {
   return JSON.parse(JSON.stringify(payload)) as RestartSentinelPayload;
 }
@@ -292,7 +289,14 @@ export async function clearRestartSentinel(env: NodeJS.ProcessEnv = process.env)
     },
     { env },
   );
-  await fs.unlink(resolveRestartSentinelPath(env)).catch(() => {});
+  await removeRestartSentinelFile(resolveRestartSentinelPath(env));
+}
+
+export async function removeRestartSentinelFile(filePath: string | null | undefined) {
+  if (!filePath) {
+    return;
+  }
+  await fs.unlink(filePath).catch(() => {});
 }
 
 export function buildRestartSuccessContinuation(params: {
@@ -323,9 +327,15 @@ export async function readRestartSentinel(
   const filePath = resolveRestartSentinelPath(env);
   try {
     const raw = await fs.readFile(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as RestartSentinel | undefined;
+    let parsed: RestartSentinel | undefined;
+    try {
+      parsed = JSON.parse(raw) as RestartSentinel | undefined;
+    } catch {
+      await removeRestartSentinelFile(filePath);
+      return null;
+    }
     if (!parsed || parsed.version !== 1 || !parsed.payload) {
-      await fs.unlink(filePath).catch(() => {});
+      await removeRestartSentinelFile(filePath);
       return null;
     }
     return parsed;

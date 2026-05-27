@@ -54,6 +54,7 @@ const markGatewayDraining = vi.fn();
 const waitForActiveTasks = vi.fn(async (_timeoutMs?: number) => ({ drained: true }));
 const resetAllLanes = vi.fn();
 const reloadTaskRegistryFromStore = vi.fn();
+const clearRuntimeConfigSnapshot = vi.fn();
 const restartGatewayProcessWithFreshPid = vi.fn<
   (_opts?: { env?: NodeJS.ProcessEnv }) => {
     mode: "spawned" | "supervised" | "disabled" | "failed";
@@ -150,6 +151,10 @@ vi.mock("../../process/command-queue.js", () => ({
 
 vi.mock("../../tasks/runtime-internal.js", () => ({
   reloadTaskRegistryFromStore: () => reloadTaskRegistryFromStore(),
+}));
+
+vi.mock("../../config/runtime-snapshot.js", () => ({
+  clearRuntimeConfigSnapshot: () => clearRuntimeConfigSnapshot(),
 }));
 
 vi.mock("../../tasks/task-registry.maintenance.js", () => ({
@@ -766,6 +771,7 @@ describe("runGatewayLoop", () => {
       expectRestartCloseCall(closeFirst, 1_234);
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(1);
       expect(resetAllLanes).toHaveBeenCalledTimes(1);
+      expect(clearRuntimeConfigSnapshot).toHaveBeenCalledTimes(1);
       expect(resetGatewayRestartStateForInProcessRestart).toHaveBeenCalledTimes(1);
       expect(reloadTaskRegistryFromStore).toHaveBeenCalledTimes(1);
 
@@ -777,6 +783,7 @@ describe("runGatewayLoop", () => {
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(2);
       expect(markGatewayDraining).toHaveBeenCalledTimes(2);
       expect(resetAllLanes).toHaveBeenCalledTimes(2);
+      expect(clearRuntimeConfigSnapshot).toHaveBeenCalledTimes(2);
       expect(resetGatewayRestartStateForInProcessRestart).toHaveBeenCalledTimes(2);
       expect(reloadTaskRegistryFromStore).toHaveBeenCalledTimes(2);
       expect(acquireGatewayLock).toHaveBeenCalledTimes(3);
@@ -1278,7 +1285,7 @@ describe("runGatewayLoop", () => {
     peekGatewaySigusr1RestartReason.mockReturnValue(undefined);
     try {
       setPlatform("darwin");
-      process.env.LAUNCH_JOB_LABEL = "ai.openclaw.gateway";
+      process.env.OPENCLAW_LAUNCHD_LABEL = "ai.openclaw.gateway";
       restartGatewayProcessWithFreshPid.mockReturnValueOnce({
         mode: "supervised",
       });
@@ -1303,7 +1310,7 @@ describe("runGatewayLoop", () => {
       });
     } finally {
       vi.useRealTimers();
-      delete process.env.LAUNCH_JOB_LABEL;
+      delete process.env.OPENCLAW_LAUNCHD_LABEL;
       if (originalPlatformDescriptor) {
         Object.defineProperty(process, "platform", originalPlatformDescriptor);
       }
@@ -1315,7 +1322,7 @@ describe("runGatewayLoop", () => {
     consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ reason: "gateway.restart" });
     try {
       setPlatform("darwin");
-      process.env.LAUNCH_JOB_LABEL = "ai.openclaw.gateway";
+      process.env.OPENCLAW_LAUNCHD_LABEL = "ai.openclaw.gateway";
       restartGatewayProcessWithFreshPid.mockReturnValueOnce({
         mode: "supervised",
       });
@@ -1337,7 +1344,7 @@ describe("runGatewayLoop", () => {
       });
     } finally {
       vi.useRealTimers();
-      delete process.env.LAUNCH_JOB_LABEL;
+      delete process.env.OPENCLAW_LAUNCHD_LABEL;
       if (originalPlatformDescriptor) {
         Object.defineProperty(process, "platform", originalPlatformDescriptor);
       }

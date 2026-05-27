@@ -4,7 +4,7 @@ import path from "node:path";
 import { resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
-import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { normalizeUniqueTrimmedStringList } from "../shared/string-normalization.js";
 import {
   dedupePreserveOrder,
   resolveAllowFromAccountId,
@@ -32,6 +32,14 @@ function resolveLegacyAllowFromPath(
   );
 }
 
+export function resolveChannelAllowFromPath(
+  channel: PairingChannel,
+  env: NodeJS.ProcessEnv = process.env,
+  accountId?: string,
+): string {
+  return resolveLegacyAllowFromPath(channel, env, accountId);
+}
+
 function readLegacyAllowFromEntries(filePath: string): string[] {
   let raw = "";
   try {
@@ -41,10 +49,7 @@ function readLegacyAllowFromEntries(filePath: string): string[] {
   }
   try {
     const parsed = JSON.parse(raw) as { allowFrom?: unknown };
-    const list = Array.isArray(parsed.allowFrom) ? parsed.allowFrom : [];
-    return dedupePreserveOrder(
-      list.map((entry) => normalizeOptionalString(entry) ?? "").filter(Boolean),
-    );
+    return normalizeUniqueTrimmedStringList(parsed.allowFrom);
   } catch {
     return [];
   }

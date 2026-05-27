@@ -10,12 +10,27 @@ import type { CodexAppServerClientFactory } from "./client-factory.js";
 import type { CodexAppServerClient } from "./client.js";
 import { maybeCompactCodexAppServerSession as maybeCompactCodexAppServerSessionImpl } from "./compact.js";
 import type { CodexServerNotification } from "./protocol.js";
-import { readCodexAppServerBinding, writeCodexAppServerBinding } from "./session-binding.js";
+import {
+  clearCodexAppServerBinding,
+  type CodexAppServerBindingIdentity,
+  readCodexAppServerBinding,
+  writeCodexAppServerBinding,
+} from "./session-binding.js";
 
 let tempDir: string;
 let codexAppServerClientFactoryForTest: CodexAppServerClientFactory | undefined;
 
 type MaybeCompactOptions = NonNullable<Parameters<typeof maybeCompactCodexAppServerSessionImpl>[1]>;
+
+const TEST_SESSION_ID = "session-1";
+const TEST_SESSION_KEY = "agent:main:session-1";
+
+function testBindingIdentity(): CodexAppServerBindingIdentity {
+  return {
+    sessionId: TEST_SESSION_ID,
+    sessionKey: TEST_SESSION_KEY,
+  };
+}
 
 function setCodexAppServerClientFactoryForTest(factory: CodexAppServerClientFactory): void {
   codexAppServerClientFactoryForTest = factory;
@@ -36,11 +51,16 @@ function maybeCompactCodexAppServerSession(
   );
 }
 
-async function writeTestBinding(options: { authProfileId?: string } = {}): Promise<string> {
+async function writeTestBinding(
+  options: Partial<Parameters<typeof writeCodexAppServerBinding>[1]> = {},
+): Promise<string> {
   const sessionFile = path.join(tempDir, "session.jsonl");
-  await writeCodexAppServerBinding(sessionFile, {
+  const identity = testBindingIdentity();
+  await writeCodexAppServerBinding(identity, {
     threadId: "thread-1",
     cwd: tempDir,
+    sessionId: TEST_SESSION_ID,
+    sessionKey: TEST_SESSION_KEY,
     ...options,
   });
   return sessionFile;
@@ -92,10 +112,12 @@ function compactDetails(result: CompactResult): Record<string, unknown> {
 describe("maybeCompactCodexAppServerSession", () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-compact-"));
+    await clearCodexAppServerBinding(testBindingIdentity());
   });
 
   afterEach(async () => {
     resetCodexAppServerClientFactoryForTest();
+    await clearCodexAppServerBinding(testBindingIdentity());
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -211,18 +233,24 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.result).toBeUndefined();
   });
 
-  it("clears stale thread bindings and reports failed native compaction", async () => {
+  it("clears stale thread binding metadata and reports failed native compaction", async () => {
     const fake = createFakeCodexClient();
     fake.request.mockRejectedValueOnce(new Error("thread not found: thread-1"));
     setCodexAppServerClientFactoryForTest(async () => fake.client);
-    const sessionFile = await writeTestBinding();
+    const sessionFile = await writeTestBinding({
+      authProfileId: "openai-codex:work",
+      model: "gpt-5.5-mini",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      serviceTier: "priority",
+    });
 
     const result = requireCompactResult(
       await startCompaction(sessionFile, { currentTokenCount: 456 }),
     );
 
     expect(fake.request).toHaveBeenCalledWith("thread/compact/start", { threadId: "thread-1" });
-    expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
+    await expect(readCodexAppServerBinding(testBindingIdentity())).resolves.toBeUndefined();
     expect(result.ok).toBe(false);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("thread not found: thread-1");
@@ -250,7 +278,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
     expect(factory).toHaveBeenCalledTimes(1);
     expect(fake.close).not.toHaveBeenCalled();
-    expect(await readCodexAppServerBinding(sessionFile)).toBeDefined();
+    expect(await readCodexAppServerBinding(testBindingIdentity())).toBeDefined();
   });
 
   it("warns when stale OpenClaw compaction overrides are ignored", async () => {
@@ -486,9 +514,11 @@ describe("maybeCompactCodexAppServerSession", () => {
     const factory = vi.fn(async () => fake.client);
     setCodexAppServerClientFactoryForTest(factory);
     const sessionFile = path.join(tempDir, "session.jsonl");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCodexAppServerBinding(testBindingIdentity(), {
       threadId: "thread-1",
       cwd: tempDir,
+      sessionId: TEST_SESSION_ID,
+      sessionKey: TEST_SESSION_KEY,
       authProfileId: "openai-codex:binding",
     });
 
@@ -560,7 +590,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
     expect(compact).not.toHaveBeenCalled();
     expect(maintain).not.toHaveBeenCalled();
-    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+    expect(await readCodexAppServerBinding(testBindingIdentity())).toMatchObject({
       threadId: "thread-1",
     });
   });

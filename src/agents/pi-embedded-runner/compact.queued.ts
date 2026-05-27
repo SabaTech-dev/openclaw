@@ -33,6 +33,10 @@ import {
   resolveEmbeddedCompactionTarget,
 } from "./compaction-runtime-context.js";
 import {
+  compactContextEngineWithSafetyTimeout,
+  resolveCompactionTimeoutMs,
+} from "./compaction-safety-timeout.js";
+import {
   rotateSqliteTranscriptAfterCompaction,
   shouldRotateCompactionTranscript,
 } from "./compaction-successor-transcript.js";
@@ -43,6 +47,7 @@ import { log } from "./logger.js";
 import { readPiModelContextTokens } from "./model-context-tokens.js";
 import { resolveModelAsync } from "./model.js";
 import type { EmbeddedPiCompactResult } from "./types.js";
+import { normalizeContextTokenBudget } from "./utils.js";
 
 function shouldFallbackAfterHarnessCompaction(
   result: EmbeddedPiCompactResult | undefined,
@@ -89,44 +94,49 @@ export async function compactEmbeddedPiSession(
     agentDir,
     workspaceDir: resolvedWorkspaceDir,
   });
-  let contextTokenBudget = params.contextTokenBudget;
-  if (!contextTokenBudget || !Number.isFinite(contextTokenBudget) || contextTokenBudget <= 0) {
-    const resolvedCompactionTarget = resolveEmbeddedCompactionTarget({
-      config: params.config,
-      provider: params.provider,
-      modelId: params.model,
-      authProfileId: params.authProfileId,
-      defaultProvider: DEFAULT_PROVIDER,
-      defaultModel: DEFAULT_MODEL,
-    });
-    const ceProvider = resolvedCompactionTarget.provider ?? DEFAULT_PROVIDER;
-    const ceModelId = resolvedCompactionTarget.model ?? DEFAULT_MODEL;
-    const { model: ceModel } = await resolveModelAsync(
-      ceProvider,
-      ceModelId,
-      agentDir,
-      params.config,
-    );
-    const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
-    const ceHarnessPolicy = resolveAgentHarnessPolicy({
-      provider: ceProvider,
-      modelId: ceModelId,
-      config: params.config,
-      agentId: agentIds.sessionAgentId,
-      sessionKey: params.sessionKey,
-    });
-    contextTokenBudget = resolveContextWindowInfo({
-      cfg: params.config,
-      provider: resolveContextConfigProviderForRuntime({
-        provider: ceProvider,
-        runtimeId: ceHarnessPolicy.runtime,
-      }),
-      modelId: ceModelId,
-      modelContextTokens: readPiModelContextTokens(ceModel),
-      modelContextWindow: ceRuntimeModel?.contextWindow,
-      defaultTokens: DEFAULT_CONTEXT_TOKENS,
-    }).tokens;
-  }
+  const resolvedCompactionTarget = resolveEmbeddedCompactionTarget({
+    config: params.config,
+    provider: params.provider,
+    modelId: params.model,
+    authProfileId: params.authProfileId,
+    defaultProvider: DEFAULT_PROVIDER,
+    defaultModel: DEFAULT_MODEL,
+  });
+  const ceProvider = resolvedCompactionTarget.provider ?? DEFAULT_PROVIDER;
+  const ceModelId = resolvedCompactionTarget.model ?? DEFAULT_MODEL;
+  const { model: ceModel } = await resolveModelAsync(
+    ceProvider,
+    ceModelId,
+    agentDir,
+    params.config,
+  );
+  const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
+  const ceHarnessPolicy = resolveAgentHarnessPolicy({
+    provider: ceProvider,
+    modelId: ceModelId,
+    config: params.config,
+    agentId: agentIds.sessionAgentId,
+    sessionKey: params.sessionKey,
+  });
+  const resolvedContextTokenBudget =
+    normalizeContextTokenBudget(
+      resolveContextWindowInfo({
+        cfg: params.config,
+        provider: resolveContextConfigProviderForRuntime({
+          provider: ceProvider,
+          runtimeId: ceHarnessPolicy.runtime,
+        }),
+        modelId: ceModelId,
+        modelContextTokens: readPiModelContextTokens(ceModel),
+        modelContextWindow: ceRuntimeModel?.contextWindow,
+        defaultTokens: DEFAULT_CONTEXT_TOKENS,
+      }).tokens,
+    ) ?? DEFAULT_CONTEXT_TOKENS;
+  const requestedContextTokenBudget = normalizeContextTokenBudget(params.contextTokenBudget);
+  const contextTokenBudget = Math.min(
+    requestedContextTokenBudget ?? resolvedContextTokenBudget,
+    resolvedContextTokenBudget,
+  );
   const contextEngineRuntimeContext = buildCompactionContextEngineRuntimeContext({
     params,
     agentDir,
@@ -216,17 +226,34 @@ export async function compactEmbeddedPiSession(
             });
           }
         }
-        const result = await contextEngine.compact({
-          sessionId: params.sessionId,
-          sessionKey: params.sessionKey,
-          transcriptScope,
-          tokenBudget: contextTokenBudget,
-          currentTokenCount: params.currentTokenCount,
-          compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
-          customInstructions: params.customInstructions,
-          force: params.trigger === "manual",
-          runtimeContext,
-        });
+        let result: Awaited<ReturnType<typeof contextEngine.compact>>;
+        try {
+          result = await compactContextEngineWithSafetyTimeout(
+            contextEngine,
+            {
+              sessionId: params.sessionId,
+              sessionKey: params.sessionKey,
+              transcriptScope,
+              tokenBudget: contextTokenBudget,
+              currentTokenCount: params.currentTokenCount,
+              compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
+              customInstructions: params.customInstructions,
+              force: params.trigger === "manual",
+              runtimeContext,
+            },
+            resolveCompactionTimeoutMs(params.config),
+            params.abortSignal,
+          );
+        } catch (compactErr) {
+          log.warn("context-engine compaction failed", {
+            errorMessage: formatErrorMessage(compactErr),
+          });
+          result = {
+            ok: false,
+            compacted: false,
+            reason: formatErrorMessage(compactErr),
+          };
+        }
         const delegatedSessionId = result.result?.sessionId;
         const delegatedRotatedTranscript =
           typeof delegatedSessionId === "string" && delegatedSessionId !== params.sessionId;

@@ -16,6 +16,9 @@ import {
   splitPromptAndAttachmentRefs,
 } from "./images.js";
 
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAsTAAALEwEAmpwYAAAADUlEQVR4nGP4////KwAJ5gPoxLp9owAAAABJRU5ErkJggg==";
+
 function expectNoPromptImages(result: { detectedRefs: unknown[]; images: unknown[] }) {
   expect(result.detectedRefs).toHaveLength(0);
   expect(result.images).toHaveLength(0);
@@ -360,8 +363,7 @@ describe("loadImageFromRef", () => {
       const sandboxRoot = path.join(sandboxParent, "sandbox");
       await fs.mkdir(sandboxRoot, { recursive: true });
       const imagePath = path.join(sandboxRoot, "photo.png");
-      const pngB64 =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+      const pngB64 = TINY_PNG_BASE64;
       await fs.writeFile(imagePath, Buffer.from(pngB64, "base64"));
 
       const image = await loadImageFromRef(
@@ -381,9 +383,7 @@ describe("loadImageFromRef", () => {
 
       expect(image?.type).toBe("image");
       expect(image?.mimeType).toBe("image/png");
-      expect(image?.data).toBe(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAsTAAALEwEAmpwYAAAADUlEQVR4nGP4////KwAJ5gPoxLp9owAAAABJRU5ErkJggg==",
-      );
+      expect(image?.data).toBe(TINY_PNG_BASE64);
     } finally {
       await fs.rm(sandboxParent, { recursive: true, force: true });
     }
@@ -427,8 +427,7 @@ describe("detectAndLoadPromptImages", () => {
   it("skips generated media-note refs already supplied inline", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-native-image-dedupe-"));
     const imagePath = path.join(stateDir, "photo.png");
-    const pngB64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const pngB64 = TINY_PNG_BASE64;
     await fs.writeFile(imagePath, Buffer.from(pngB64, "base64"));
 
     try {
@@ -451,8 +450,7 @@ describe("detectAndLoadPromptImages", () => {
   });
 
   it("keeps distinct inline attachments with identical bytes", async () => {
-    const pngB64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const pngB64 = TINY_PNG_BASE64;
     const image = { type: "image" as const, data: pngB64, mimeType: "image/png" };
 
     const result = await detectAndLoadPromptImages({
@@ -514,8 +512,7 @@ describe("detectAndLoadPromptImages", () => {
     const agentRoot = path.join(stateDir, "agent");
     await fs.mkdir(sandboxRoot, { recursive: true });
     await fs.mkdir(agentRoot, { recursive: true });
-    const pngB64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+    const pngB64 = TINY_PNG_BASE64;
     await fs.writeFile(path.join(agentRoot, "secret.png"), Buffer.from(pngB64, "base64"));
     const sandbox = createUnsafeMountedSandbox({ sandboxRoot, agentRoot });
     const bridge = sandbox.fsBridge;
@@ -545,8 +542,7 @@ describe("detectAndLoadPromptImages", () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-native-image-managed-"));
     const workspaceDir = path.join(stateDir, "workspace-agent");
     await fs.mkdir(workspaceDir, { recursive: true });
-    const pngB64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+    const pngB64 = TINY_PNG_BASE64;
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     const saved = await saveMediaBuffer(
       Buffer.from(pngB64, "base64"),

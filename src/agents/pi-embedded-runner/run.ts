@@ -106,6 +106,10 @@ import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js"
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { runPostCompactionSideEffects } from "./compaction-hooks.js";
 import { buildEmbeddedCompactionRuntimeContext } from "./compaction-runtime-context.js";
+import {
+  compactContextEngineWithSafetyTimeout,
+  resolveCompactionTimeoutMs,
+} from "./compaction-safety-timeout.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
 import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { hasMessagingToolDeliveryEvidence } from "./delivery-evidence.js";
@@ -137,6 +141,7 @@ import {
   buildErrorAgentMeta,
   buildUsageAgentMetaFields,
   createCompactionDiagId,
+  isAssistantForModelRef,
   resolveActiveErrorContext,
   resolveFinalAssistantRawText,
   resolveFinalAssistantVisibleText,
@@ -1600,6 +1605,9 @@ export async function runEmbeddedPiAgent(
             initialReplayState: accumulatedReplayState,
             authStorage,
             authProfileStore: runAttemptAuthProfileStore,
+            // Codex builds OpenClaw tools inside its harness. Keep transport
+            // auth scoped while letting tool construction see plugin creds.
+            toolAuthProfileStore: agentHarness.id === "codex" ? attemptAuthProfileStore : undefined,
             modelRegistry,
             agentId: workspaceResolution.agentId,
             legacyBeforeAgentStartResult,
@@ -1769,10 +1777,18 @@ export async function runEmbeddedPiAgent(
           if (attempt.contextBudgetStatus) {
             lastContextBudgetStatus = attempt.contextBudgetStatus;
           }
+          const sessionAssistantForCandidate =
+            !currentAttemptAssistant &&
+            !isAssistantForModelRef(sessionLastAssistant, {
+              provider,
+              model: modelId,
+            })
+              ? undefined
+              : sessionLastAssistant;
           const activeErrorContext = resolveActiveErrorContext({
             provider,
             model: modelId,
-            assistant: currentAttemptAssistant ?? sessionLastAssistant,
+            assistant: currentAttemptAssistant ?? sessionAssistantForCandidate,
           });
           const resolveReplayInvalidForAttempt = (incompleteTurnText?: string | null) =>
             accumulatedReplayState.replayInvalid ||
@@ -1787,8 +1803,8 @@ export async function runEmbeddedPiAgent(
             accumulatedReplayState,
             attempt.replayMetadata,
           );
-          const formattedAssistantErrorText = sessionLastAssistant
-            ? formatAssistantErrorText(sessionLastAssistant, {
+          const formattedAssistantErrorText = sessionAssistantForCandidate
+            ? formatAssistantErrorText(sessionAssistantForCandidate, {
                 cfg: params.config,
                 sessionKey: resolvedSessionKey ?? params.sessionId,
                 provider: activeErrorContext.provider,
@@ -1796,8 +1812,8 @@ export async function runEmbeddedPiAgent(
               })
             : undefined;
           const assistantErrorText =
-            sessionLastAssistant?.stopReason === "error"
-              ? sessionLastAssistant.errorMessage?.trim() || formattedAssistantErrorText
+            sessionAssistantForCandidate?.stopReason === "error"
+              ? sessionAssistantForCandidate.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
           const canRestartForLiveSwitch =
             !hasMessagingToolDeliveryEvidence(attempt) &&
@@ -1993,12 +2009,20 @@ export async function runEmbeddedPiAgent(
             const errorText = contextOverflowError.text;
             const msgCount = attempt.messagesSnapshot?.length ?? 0;
             const observedOverflowTokens = extractObservedOverflowTokenCount(errorText);
+            const overflowTokenCountForCompaction =
+              observedOverflowTokens ??
+              (ctxInfo.tokens > 0
+                ? // Confirmed overflow with an unparseable provider message still carries a
+                  // minimally over-budget count for compaction engines and diagnostics.
+                  ctxInfo.tokens + 1
+                : undefined);
             log.warn(
               `[context-overflow-diag] sessionKey=${params.sessionKey ?? params.sessionId} ` +
                 `provider=${provider}/${modelId} source=${contextOverflowError.source} ` +
                 `messages=${msgCount} transcriptScope=${activeTranscriptScope.agentId}/${activeTranscriptScope.sessionId} ` +
                 `diagId=${overflowDiagId} compactionAttempts=${overflowCompactionAttempts} ` +
                 `observedTokens=${observedOverflowTokens ?? "unknown"} ` +
+                `compactionTokens=${overflowTokenCountForCompaction ?? "unknown"} ` +
                 `error=${errorText.slice(0, 200)}`,
             );
             const isCompactionFailure = isCompactionFailureError(errorText);
@@ -2083,25 +2107,35 @@ export async function runEmbeddedPiAgent(
                   ...(attempt.promptCache ? { promptCache: attempt.promptCache } : {}),
                   runId: params.runId,
                   trigger: "overflow",
-                  ...(observedOverflowTokens !== undefined
-                    ? { currentTokenCount: observedOverflowTokens }
+                  ...(overflowTokenCountForCompaction !== undefined
+                    ? { currentTokenCount: overflowTokenCountForCompaction }
                     : {}),
                   diagId: overflowDiagId,
                   attempt: overflowCompactionAttempts,
                   maxAttempts: MAX_OVERFLOW_COMPACTION_ATTEMPTS,
                 };
-                compactResult = await contextEngine.compact({
-                  sessionId: activeSessionId,
-                  sessionKey: params.sessionKey,
-                  transcriptScope: resolveTranscriptScope(activeSessionId),
-                  tokenBudget: ctxInfo.tokens,
-                  ...(observedOverflowTokens !== undefined
-                    ? { currentTokenCount: observedOverflowTokens }
-                    : {}),
-                  force: true,
-                  compactionTarget: "budget",
-                  runtimeContext: overflowCompactionRuntimeContext,
-                });
+                // Bound plugin-owned compaction with the same finite safety
+                // timeout that protects native compaction, and thread the
+                // run-level abort signal through, so a hung plugin compact()
+                // cannot stall overflow recovery indefinitely. A timeout/abort
+                // surfaces as a thrown error handled by the catch below.
+                compactResult = await compactContextEngineWithSafetyTimeout(
+                  contextEngine,
+                  {
+                    sessionId: activeSessionId,
+                    sessionKey: params.sessionKey,
+                    transcriptScope: resolveTranscriptScope(activeSessionId),
+                    tokenBudget: ctxInfo.tokens,
+                    ...(overflowTokenCountForCompaction !== undefined
+                      ? { currentTokenCount: overflowTokenCountForCompaction }
+                      : {}),
+                    force: true,
+                    compactionTarget: "budget",
+                    runtimeContext: overflowCompactionRuntimeContext,
+                  },
+                  resolveCompactionTimeoutMs(params.config),
+                  params.abortSignal,
+                );
                 if (compactResult.ok && compactResult.compacted) {
                   adoptCompactionTranscript(compactResult);
                   await runContextEngineMaintenance({
@@ -2238,6 +2272,13 @@ export async function runEmbeddedPiAgent(
               );
             }
             const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
+            const overflowRecoveryText =
+              "Context overflow: prompt too large for the model. " +
+              "Try /reset (or /new) to start a fresh session, or use a larger-context model.";
+            log.warn(
+              `[context-overflow-recovery] exhausted provider overflow recovery for ${provider}/${modelId}; ` +
+                `livenessState=blocked suggestedAction=reset_or_new kind=${kind}`,
+            );
             attempt.setTerminalLifecycleMeta?.({
               replayInvalid: resolveReplayInvalidForAttempt(),
               livenessState: "blocked",
@@ -2245,9 +2286,7 @@ export async function runEmbeddedPiAgent(
             return {
               payloads: [
                 {
-                  text:
-                    "Context overflow: prompt too large for the model. " +
-                    "Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+                  text: overflowRecoveryText,
                   isError: true,
                 },
               ],
@@ -2264,6 +2303,8 @@ export async function runEmbeddedPiAgent(
                   lastTurnTotal,
                 }),
                 systemPromptReport: attempt.systemPromptReport,
+                finalAssistantVisibleText: overflowRecoveryText,
+                finalAssistantRawText: overflowRecoveryText,
                 finalPromptText: attempt.finalPromptText,
                 replayInvalid: resolveReplayInvalidForAttempt(),
                 livenessState: "blocked",
@@ -2555,7 +2596,7 @@ export async function runEmbeddedPiAgent(
             throw promptError;
           }
 
-          const assistantForFailover = currentAttemptAssistant ?? sessionLastAssistant;
+          const assistantForFailover = currentAttemptAssistant ?? sessionAssistantForCandidate;
           const fallbackThinking = pickFallbackThinkingLevel({
             message: assistantForFailover?.errorMessage,
             attempted: attemptedThinking,

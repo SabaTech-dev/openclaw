@@ -16,6 +16,7 @@ import { resolveOAuthDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { coerceSecretRef } from "../config/types.secrets.js";
 import type { PluginOrigin } from "../plugins/plugin-origin.types.js";
+import { uniqueStrings } from "../shared/string-normalization.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveUserPath } from "../utils.js";
 import type {
@@ -76,7 +77,7 @@ export function resolveRefreshAgentDirs(
   if (!context.explicitAgentDirs || context.explicitAgentDirs.length === 0) {
     return configDerived;
   }
-  return [...new Set([...context.explicitAgentDirs, ...configDerived])];
+  return uniqueStrings([...context.explicitAgentDirs, ...configDerived]);
 }
 
 function resolveCandidateAgentDirs(params: {
@@ -85,7 +86,7 @@ function resolveCandidateAgentDirs(params: {
   agentDirs?: string[];
 }): string[] {
   return params.agentDirs?.length
-    ? [...new Set(params.agentDirs.map((entry) => resolveUserPath(entry, params.env)))]
+    ? uniqueStrings(params.agentDirs.map((entry) => resolveUserPath(entry, params.env)))
     : collectCandidateAgentDirs(params.config, params.env);
 }
 

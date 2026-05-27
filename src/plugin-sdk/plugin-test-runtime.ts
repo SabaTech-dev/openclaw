@@ -43,6 +43,7 @@ export {
 export { capturePluginRegistration } from "../plugins/captured-registration.js";
 export { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 export { runProviderCatalog } from "../plugins/provider-discovery.js";
+export { onTrustedInternalDiagnosticEvent } from "../infra/diagnostic-events.js";
 export {
   buildProviderPluginMethodChoice,
   resolveProviderModelPickerEntries,

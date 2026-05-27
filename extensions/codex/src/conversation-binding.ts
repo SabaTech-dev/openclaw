@@ -34,6 +34,7 @@ import {
   type CodexAppServerAuthProfileLookup,
 } from "./app-server/session-binding.js";
 import { getSharedCodexAppServerClient } from "./app-server/shared-client.js";
+import { CODEX_NATIVE_PERSONALITY_NONE } from "./app-server/thread-lifecycle.js";
 import { formatCodexDisplayText } from "./command-formatters.js";
 import {
   createCodexConversationBindingData,
@@ -279,6 +280,7 @@ async function attachExistingThread(params: {
       threadId: params.threadId,
       ...(params.model ? { model: params.model } : {}),
       ...(modelProvider ? { modelProvider } : {}),
+      personality: CODEX_NATIVE_PERSONALITY_NONE,
       approvalPolicy: params.approvalPolicy ?? runtime.approvalPolicy,
       approvalsReviewer: runtime.approvalsReviewer,
       sandbox: params.sandbox ?? runtime.sandbox,
@@ -348,6 +350,7 @@ async function createThread(params: {
       cwd: params.workspaceDir,
       ...(params.model ? { model: params.model } : {}),
       ...(modelProvider ? { modelProvider } : {}),
+      personality: CODEX_NATIVE_PERSONALITY_NONE,
       approvalPolicy: params.approvalPolicy ?? runtime.approvalPolicy,
       approvalsReviewer: runtime.approvalsReviewer,
       sandbox: params.sandbox ?? runtime.sandbox,
@@ -465,6 +468,7 @@ async function runBoundTurn(params: {
           binding.cwd || params.data.workspaceDir,
         ),
         ...(binding.model ? { model: binding.model } : {}),
+        personality: CODEX_NATIVE_PERSONALITY_NONE,
         ...((binding.serviceTier ?? runtime.serviceTier)
           ? { serviceTier: binding.serviceTier ?? runtime.serviceTier }
           : {}),
@@ -527,7 +531,11 @@ async function runBoundTurnWithMissingThreadRecovery(params: {
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {
-  return /\bthread not found:/iu.test(formatErrorMessage(error));
+  const message = formatErrorMessage(error);
+  return (
+    /\bthread not found:/iu.test(message) ||
+    /\bbound Codex conversation has no thread binding\b/u.test(message)
+  );
 }
 
 function enqueueBoundTurn<T>(key: string, run: () => Promise<T>): Promise<T> {

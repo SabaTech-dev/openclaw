@@ -14,6 +14,7 @@ import {
 } from "../tasks/task-flow-registry.maintenance.js";
 import {
   listTaskAuditFindings,
+  summarizeRetainedLostTaskAuditFindings,
   summarizeTaskAuditFindings,
 } from "../tasks/task-registry.audit.js";
 import {
@@ -455,6 +456,9 @@ export async function tasksMaintenanceCommand(
   const summary = getInspectableTaskRegistrySummary();
   const auditAfter = opts.apply ? getInspectableTaskAuditSummary() : auditBefore;
   const flowAuditAfter = opts.apply ? getInspectableTaskFlowAuditSummary() : flowAuditBefore;
+  const retainedLostAfter = summarizeRetainedLostTaskAuditFindings(
+    listTaskAuditFindings({ tasks: reconcileInspectableTasks() }),
+  );
 
   if (opts.json) {
     runtime.log(
@@ -493,6 +497,13 @@ export async function tasksMaintenanceCommand(
       `${opts.apply ? "Tasks health after apply" : "Tasks health"}: ${summary.byStatus.queued} queued · ${summary.byStatus.running} running · ${auditAfter.errors + flowAuditAfter.errors} audit errors · ${auditAfter.warnings + flowAuditAfter.warnings} audit warnings`,
     ),
   );
+  if (retainedLostAfter.count > 0) {
+    runtime.log(
+      info(
+        `Retained lost tasks: ${retainedLostAfter.count} retained until ${retainedLostAfter.nextCleanupAfter ? new Date(retainedLostAfter.nextCleanupAfter).toISOString() : "cleanupAfter"}; maintenance will prune after cleanupAfter.`,
+      ),
+    );
+  }
   if (opts.apply) {
     runtime.log(
       info(

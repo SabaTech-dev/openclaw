@@ -63,6 +63,7 @@ import {
   resolveVoiceWakeRouteByTrigger,
 } from "../../infra/voicewake-routing.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
+import type { PluginHookSessionEndReason } from "../../plugins/hook-types.js";
 import {
   classifySessionKeyShape,
   isAcpSessionKey,
@@ -81,6 +82,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "../../shared/string-coerce.js";
+import { normalizeStringEntries, uniqueStrings } from "../../shared/string-normalization.js";
 import { createRunningTaskRun, finalizeTaskRunByRunId } from "../../tasks/detached-task-runtime.js";
 import type { TaskStatus } from "../../tasks/task-registry.types.js";
 import {
@@ -121,7 +123,11 @@ import {
   validateAgentParams,
   validateAgentWaitParams,
 } from "../protocol/index.js";
-import { performGatewaySessionReset } from "../session-reset-service.js";
+import {
+  emitGatewaySessionEndPluginHook,
+  emitGatewaySessionStartPluginHook,
+  performGatewaySessionReset,
+} from "../session-reset-service.js";
 import { reactivateCompletedSubagentSession } from "../session-subagent-reactivation.js";
 import {
   canonicalizeSpawnedByForAgent,
@@ -148,6 +154,15 @@ import type {
 } from "./types.js";
 
 const RESET_COMMAND_RE = /^\/(new|reset)(?:\s+([\s\S]*))?$/i;
+
+type AgentSendSessionLifecycleTransition = {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  sessionId: string;
+  agentId?: string;
+  previousSessionId?: string;
+  previousEndReason?: PluginHookSessionEndReason;
+};
 
 function formatAttachmentFailureForLog(err: unknown): string {
   const primary = formatUncaughtError(err);
@@ -203,6 +218,32 @@ function resolveCanUseInternalRuntimeHandoff(
   client: GatewayRequestHandlerOptions["client"],
 ): boolean {
   return client?.connect?.client?.mode === GATEWAY_CLIENT_MODES.BACKEND;
+}
+
+function emitAgentSendSessionLifecycleTransition(
+  transition: AgentSendSessionLifecycleTransition | undefined,
+): void {
+  if (!transition) {
+    return;
+  }
+  if (transition.previousSessionId) {
+    emitGatewaySessionEndPluginHook({
+      cfg: transition.cfg,
+      sessionKey: transition.sessionKey,
+      sessionId: transition.previousSessionId,
+      agentId: transition.agentId,
+      reason: transition.previousEndReason ?? "unknown",
+      nextSessionId: transition.sessionId,
+      nextSessionKey: transition.sessionKey,
+    });
+  }
+  emitGatewaySessionStartPluginHook({
+    cfg: transition.cfg,
+    sessionKey: transition.sessionKey,
+    sessionId: transition.sessionId,
+    resumedFrom: transition.previousSessionId,
+    agentId: transition.agentId,
+  });
 }
 
 async function runSessionResetFromAgent(params: {
@@ -448,7 +489,7 @@ function resolveAgentDedupeKeys(params: {
   if (approvalId) {
     keys.push(`agent:exec-approval-followup:${approvalId}`);
   }
-  return [...new Set(keys)];
+  return uniqueStrings(keys);
 }
 
 function readGatewayDedupeEntry(params: {
@@ -1014,6 +1055,87 @@ export const agentHandlers: GatewayRequestHandlers = {
     // Reserve the stable alias before awaited session/delivery work so overlaps dedupe.
     reserveExecApprovalFollowupDedupe();
     try {
+      let message = (request.message ?? "").trim();
+      if (!isRawModelRun) {
+        message = annotateInterSessionPromptText(message, inputProvenance);
+      }
+      let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+      let imageOrder: PromptImageOrderEntry[] = [];
+      if (normalizedAttachments.length > 0) {
+        let baseProvider: string | undefined;
+        let baseModel: string | undefined;
+        if (requestedSessionKeyRaw) {
+          const { cfg: sessCfg, entry: sessEntry } = loadSessionEntry(requestedSessionKeyRaw);
+          const sessionAgentId = resolveAgentIdFromSessionKey(requestedSessionKeyRaw);
+          const modelRef = resolveSessionModelRef(sessCfg, sessEntry, sessionAgentId);
+          baseProvider = modelRef.provider;
+          baseModel = modelRef.model;
+        }
+        const effectiveProvider = providerOverride || baseProvider;
+        const effectiveModel = modelOverride || baseModel;
+        const supportsInlineImages = await resolveGatewayModelSupportsImages({
+          loadGatewayModelCatalog: context.loadGatewayModelCatalog,
+          provider: effectiveProvider,
+          model: effectiveModel,
+        });
+
+        try {
+          const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
+            maxBytes: resolveChatAttachmentMaxBytes(cfg),
+            log: context.logGateway,
+            supportsInlineImages,
+            // agent.run does not yet wire a ctx.MediaPaths stage path, so reject
+            // non-image attachments explicitly (UnsupportedAttachmentError)
+            // instead of saving them where the agent cannot reach them.
+            acceptNonImage: false,
+          });
+          message = parsed.message.trim();
+          images = parsed.images;
+          imageOrder = parsed.imageOrder;
+          // offloadedRefs are appended as text markers to `message`; the agent
+          // runner will resolve them via detectAndLoadPromptImages.
+        } catch (err) {
+          // MediaOffloadError indicates a server-side storage fault (ENOSPC, EPERM,
+          // etc.). Map it to UNAVAILABLE so clients can retry without treating it as
+          // a bad request. All other errors are input-validation failures → 4xx.
+          logAttachmentFailure(context.logGateway, "agent attachment parse failed", err);
+          const isServerFault = err instanceof MediaOffloadError;
+          respond(
+            false,
+            undefined,
+            errorShape(
+              isServerFault ? ErrorCodes.UNAVAILABLE : ErrorCodes.INVALID_REQUEST,
+              String(err),
+            ),
+          );
+          return;
+        }
+      }
+
+      // Accept internal non-delivery sources (heartbeat, cron, webhook) as valid
+      // channel hints so subagent spawns from those parent runs are not rejected.
+      const isKnownGatewayChannel = (value: string): boolean =>
+        isGatewayMessageChannel(value) || isInternalNonDeliveryChannel(value);
+      const channelHints = normalizeStringEntries(
+        [request.channel, request.replyChannel].filter(
+          (value): value is string => typeof value === "string",
+        ),
+      );
+      for (const rawChannel of channelHints) {
+        const normalized = normalizeMessageChannel(rawChannel);
+        if (normalized && normalized !== "last" && !isKnownGatewayChannel(normalized)) {
+          respond(
+            false,
+            undefined,
+            errorShape(
+              ErrorCodes.INVALID_REQUEST,
+              `invalid agent params: unknown channel: ${normalized}`,
+            ),
+          );
+          return;
+        }
+      }
+
       const voiceWakeTrigger = normalizeOptionalString(request.voiceWakeTrigger) ?? "";
       const replyTo = normalizeOptionalString(request.replyTo) ?? "";
       const to = normalizeOptionalString(request.to) ?? "";
@@ -1195,14 +1317,17 @@ export const agentHandlers: GatewayRequestHandlers = {
             channel: routingInfo?.channel ?? entry?.channel ?? request.channel,
           }),
         });
+        const lifecycleTimestamps = entry
+          ? resolveSessionLifecycleTimestamps({
+              entry,
+              agentId: resolveAgentIdFromSessionKey(canonicalKey),
+              databasePath,
+            })
+          : undefined;
         const freshness = entry
           ? evaluateSessionFreshness({
               updatedAt: entry.updatedAt,
-              ...resolveSessionLifecycleTimestamps({
-                entry,
-                agentId: resolveAgentIdFromSessionKey(canonicalKey),
-                databasePath,
-              }),
+              ...lifecycleTimestamps,
               now,
               policy: resetPolicy,
             })
@@ -1246,6 +1371,7 @@ export const agentHandlers: GatewayRequestHandlers = {
           groupId: string | undefined;
           groupChannel: string | undefined;
           groupSpace: string | undefined;
+          freshSessionRotatedSinceLoad: boolean;
         };
         const requestHasDeliveryTarget =
           Boolean(request.to?.trim()) || request.threadId !== undefined;
@@ -1393,6 +1519,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             groupId: nextGroup.groupId,
             groupChannel: nextGroup.groupChannel,
             groupSpace: nextGroup.groupSpace,
+            freshSessionRotatedSinceLoad,
           };
         };
         let patchBuild = buildSessionPatch(entry);
@@ -1425,23 +1552,6 @@ export const agentHandlers: GatewayRequestHandlers = {
               ? { ...patchBuild.patch, sessionStartedAt: recoveredSessionStartedAt }
               : patchBuild.patch;
           const merged = mergeSessionEntry(freshEntry, effectivePatch);
-          if (request.deliver === true) {
-            const sendPolicy = resolveSendPolicy({
-              cfg,
-              entry: merged,
-              sessionKey: canonicalKey,
-              channel: merged?.channel,
-              chatType: merged?.chatType,
-            });
-            if (sendPolicy === "deny") {
-              respond(
-                false,
-                undefined,
-                errorShape(ErrorCodes.INVALID_REQUEST, "send blocked by session policy"),
-              );
-              return;
-            }
-          }
           upsertSessionEntry({
             agentId: sessionAgentId,
             path: databasePath,
@@ -1455,6 +1565,45 @@ export const agentHandlers: GatewayRequestHandlers = {
         resolvedGroupId = patchBuild.groupId;
         resolvedGroupChannel = patchBuild.groupChannel;
         resolvedGroupSpace = patchBuild.groupSpace;
+        if (
+          !suppressVisibleSessionEffects &&
+          isNewSession &&
+          resolvedSessionId &&
+          !patchBuild.freshSessionRotatedSinceLoad
+        ) {
+          const previousSessionId = rotatedSessionId ? entry?.sessionId : undefined;
+          const sessionLifecycleTransition: AgentSendSessionLifecycleTransition = {
+            cfg,
+            sessionKey: canonicalSessionKey,
+            sessionId: resolvedSessionId,
+            agentId,
+            previousSessionId,
+            previousEndReason: previousSessionId
+              ? (freshness?.staleReason ??
+                (usableRequestedSessionId && entry?.sessionId !== usableRequestedSessionId
+                  ? "new"
+                  : "unknown"))
+              : undefined,
+          };
+          emitAgentSendSessionLifecycleTransition(sessionLifecycleTransition);
+        }
+        if (request.deliver === true) {
+          const sendPolicy = resolveSendPolicy({
+            cfg,
+            entry: sessionEntry,
+            sessionKey: canonicalKey,
+            channel: sessionEntry?.channel,
+            chatType: sessionEntry?.chatType,
+          });
+          if (sendPolicy === "deny") {
+            respond(
+              false,
+              undefined,
+              errorShape(ErrorCodes.INVALID_REQUEST, "send blocked by session policy"),
+            );
+            return;
+          }
+        }
         if (
           !suppressVisibleSessionEffects &&
           (canonicalSessionKey === mainSessionKey || canonicalSessionKey === "global")

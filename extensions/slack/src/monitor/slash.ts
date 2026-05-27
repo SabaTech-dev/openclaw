@@ -22,6 +22,7 @@ import { listSessionEntries } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
+  normalizeStringEntriesLower,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkItems } from "openclaw/plugin-sdk/text-chunking";
 import type { ResolvedSlackAccount } from "../accounts.js";
@@ -797,7 +798,7 @@ export async function registerSlackMonitorSlashCommands(params: {
       provider: "slack",
     });
     const existingNativeNames = new Set(
-      nativeCommands.map((c) => normalizeLowercaseStringOrEmpty(c.name)).filter(Boolean),
+      normalizeStringEntriesLower(nativeCommands.map((command) => command.name)),
     );
     const { listProviderPluginCommandSpecs } = await loadSlackPluginCommandsRuntime();
     for (const pluginCommand of listProviderPluginCommandSpecs("slack")) {

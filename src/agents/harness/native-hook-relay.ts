@@ -19,11 +19,13 @@ import { resolveOpenClawPackageRootSync } from "../../infra/openclaw-root.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { hasGlobalHooks } from "../../plugins/hook-runner-global.js";
 import { PluginApprovalResolutions } from "../../plugins/types.js";
+import { uniqueValues } from "../../shared/string-normalization.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { asBoolean } from "../../utils/boolean.js";
 import { runBeforeToolCallHook } from "../pi-tools.before-tool-call.js";
 import { stableStringify } from "../stable-stringify.js";
 import { normalizeToolName } from "../tool-policy.js";
@@ -1426,7 +1428,7 @@ function normalizeCodexHookMetadata(rawPayload: JsonValue): NativeHookRelayInvoc
   if (permissionMode) {
     metadata.permissionMode = permissionMode;
   }
-  const stopHookActive = readOptionalBoolean(payload.stop_hook_active);
+  const stopHookActive = asBoolean(payload.stop_hook_active);
   if (stopHookActive !== undefined) {
     metadata.stopHookActive = stopHookActive;
   }
@@ -1702,7 +1704,7 @@ function normalizeAllowedEvents(
   if (!events?.length) {
     return NATIVE_HOOK_RELAY_EVENTS;
   }
-  return [...new Set(events)];
+  return uniqueValues(events);
 }
 
 function normalizePositiveInteger(value: number | undefined, fallback: number): number {
@@ -1753,10 +1755,6 @@ function readNonEmptyString(value: unknown, name: string): string {
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

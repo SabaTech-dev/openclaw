@@ -33,6 +33,9 @@ type MockOpenClawToolsOptions = {
   sandboxRoot?: string;
   sandboxFsBridge?: SandboxFsBridge;
   fsPolicy?: NonNullable<Parameters<typeof createImageTool>[0]>["fsPolicy"];
+  agentChannel?: string | null;
+  agentAccountId?: string | null;
+  currentChannelId?: string | null;
   modelHasVision?: boolean;
 };
 
@@ -164,6 +167,9 @@ vi.mock("../openclaw-tools.js", async () => {
               }
             : undefined,
         fsPolicy: options?.fsPolicy,
+        agentChannel: options?.agentChannel,
+        agentAccountId: options?.agentAccountId,
+        currentChannelId: options?.currentChannelId,
         modelHasVision: options?.modelHasVision,
       });
       return imageTool ? [imageTool] : [];
@@ -1633,6 +1639,85 @@ describe("image tool implicit imageModel config", () => {
     });
   });
 
+  it("allows image paths from the current iMessage account attachment roots", async () => {
+    const fetch = stubMinimaxOkFetch();
+    await withTempAgentDir(async (agentDir) => {
+      const attachmentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-imessage-root-"));
+      const imagePath = path.join(attachmentRoot, "photo.png");
+      await fs.writeFile(imagePath, Buffer.from(ONE_PIXEL_PNG_B64, "base64"));
+      try {
+        const cfg: OpenClawConfig = {
+          ...createMinimaxImageConfig(),
+          channels: {
+            imessage: {
+              accounts: {
+                work: {
+                  attachmentRoots: [attachmentRoot],
+                },
+              },
+            },
+          },
+        };
+
+        const withoutChannel = createRequiredImageTool({ config: cfg, agentDir });
+        await expect(
+          withoutChannel.execute("t1", { prompt: "Describe.", image: imagePath }),
+        ).rejects.toThrow(/not under an allowed directory/i);
+
+        const withImessage = createRequiredImageTool({
+          config: cfg,
+          agentDir,
+          agentChannel: "imessage",
+          agentAccountId: "work",
+        });
+
+        await expectImageToolExecOk(withImessage, imagePath);
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        await fs.rm(attachmentRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("allows image paths from current iMessage wildcard attachment roots", async () => {
+    const fetch = stubMinimaxOkFetch();
+    await withTempAgentDir(async (agentDir) => {
+      const attachmentRootParent = await fs.mkdtemp(
+        path.join(os.tmpdir(), "openclaw-imessage-wildcard-root-"),
+      );
+      const attachmentRoot = path.join(attachmentRootParent, "work", "Attachments");
+      const imagePath = path.join(attachmentRoot, "photo.png");
+      await fs.mkdir(attachmentRoot, { recursive: true });
+      await fs.writeFile(imagePath, Buffer.from(ONE_PIXEL_PNG_B64, "base64"));
+      try {
+        const cfg: OpenClawConfig = {
+          ...createMinimaxImageConfig(),
+          channels: {
+            imessage: {
+              accounts: {
+                work: {
+                  attachmentRoots: [path.join(attachmentRootParent, "*", "Attachments")],
+                },
+              },
+            },
+          },
+        };
+
+        const withImessage = createRequiredImageTool({
+          config: cfg,
+          agentDir,
+          agentChannel: "imessage",
+          agentAccountId: "work",
+        });
+
+        await expectImageToolExecOk(withImessage, imagePath);
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        await fs.rm(attachmentRootParent, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("allows workspace images via createOpenClawCodingTools when workspace root is explicit", async () => {
     await withTempWorkspacePng(async ({ workspaceDir, imagePath }) => {
       const fetch = stubMinimaxOkFetch();
@@ -1956,8 +2041,6 @@ describe("image tool data URL support", () => {
 });
 
 describe("image tool MiniMax VLM routing", () => {
-  const pngB64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
   const priorFetch = global.fetch;
   registerImageToolEnvReset(priorFetch, [
     "MINIMAX_API_KEY",
@@ -1990,7 +2073,7 @@ describe("image tool MiniMax VLM routing", () => {
 
     const res = await tool.execute("t1", {
       prompt: "Describe the image.",
-      image: `data:image/png;base64,${pngB64}`,
+      image: `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
     });
 
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -2014,7 +2097,10 @@ describe("image tool MiniMax VLM routing", () => {
 
     const res = await tool.execute("t1", {
       prompt: "Compare these images.",
-      images: [`data:image/png;base64,${pngB64}`, `data:image/png;base64,${secondPngB64}`],
+      images: [
+        `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
+        `data:image/png;base64,${secondPngB64}`,
+      ],
     });
 
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -2032,9 +2118,9 @@ describe("image tool MiniMax VLM routing", () => {
 
     const deduped = await tool.execute("t1", {
       prompt: "Compare these images.",
-      image: `data:image/png;base64,${pngB64}`,
+      image: `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
       images: [
-        `data:image/png;base64,${pngB64}`,
+        `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
         `data:image/png;base64,${secondPngB64}`,
         `data:image/png;base64,${secondPngB64}`,
       ],
@@ -2050,7 +2136,7 @@ describe("image tool MiniMax VLM routing", () => {
 
     const tooMany = await tool.execute("t2", {
       prompt: "Compare these images.",
-      image: `data:image/png;base64,${pngB64}`,
+      image: `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
       images: [`data:image/gif;base64,${ONE_PIXEL_GIF_B64}`],
       maxImages: 1,
     });
@@ -2074,7 +2160,7 @@ describe("image tool MiniMax VLM routing", () => {
     await expect(
       tool.execute("t1", {
         prompt: "Describe the image.",
-        image: `data:image/png;base64,${pngB64}`,
+        image: `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
       }),
     ).rejects.toThrow(/MiniMax VLM API error/i);
   });
@@ -2462,60 +2548,94 @@ describe("image compression policy", () => {
   });
 
   it("keeps runtime Anthropic media limits for dated model variants", async () => {
-    await expect(
-      testing.resolveImageCompressionPolicy({
-        cfg: {},
-        imageModelConfig: {
-          primary: "anthropic/claude-opus-4.7-20260219",
-          fallbacks: ["anthropic/claude-sonnet-4.6-20260219"],
-        },
-        imageCount: 1,
+    testing.setProviderDepsForTest({
+      resolveModelAsync: async (_provider, model) => ({
+        model: {
+          mediaInput: {
+            image: model.includes("opus")
+              ? { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" }
+              : { maxSidePx: 1568, preferredSidePx: 1568, tokenMode: "provider" },
+          },
+        } as never,
+        authStorage: {} as never,
+        modelRegistry: {} as never,
       }),
-    ).resolves.toEqual({
-      imageCount: 1,
-      models: [
-        { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
-        { maxSidePx: 1568, preferredSidePx: 1568, tokenMode: "provider" },
-      ],
     });
+    try {
+      await expect(
+        testing.resolveImageCompressionPolicy({
+          cfg: {},
+          imageModelConfig: {
+            primary: "anthropic/claude-opus-4.7-20260219",
+            fallbacks: ["anthropic/claude-sonnet-4.6-20260219"],
+          },
+          imageCount: 1,
+        }),
+      ).resolves.toEqual({
+        imageCount: 1,
+        models: [
+          { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+          { maxSidePx: 1568, preferredSidePx: 1568, tokenMode: "provider" },
+        ],
+      });
+    } finally {
+      testing.setProviderDepsForTest();
+    }
   });
 
   it("merges partial configured Anthropic media policy with runtime side limits", async () => {
-    await expect(
-      testing.resolveImageCompressionPolicy({
-        cfg: {
-          models: {
-            providers: {
-              anthropic: {
-                baseUrl: "https://api.anthropic.com",
-                api: "anthropic-messages",
-                models: [
-                  {
-                    id: "claude-opus-4.7-20260219",
-                    name: "Claude Opus 4.7 dated",
-                    reasoning: true,
-                    input: ["text", "image"],
-                    contextWindow: 200_000,
-                    maxTokens: 64_000,
-                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                    mediaInput: { image: { maxBytes: 1_000_000 } },
-                  },
-                ],
+    testing.setProviderDepsForTest({
+      resolveModelAsync: async (_provider, _model, _agentDir, _cfg, options) => ({
+        model: {
+          mediaInput: {
+            image: options?.skipProviderRuntimeHooks
+              ? { maxBytes: 1_000_000 }
+              : { maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+          },
+        } as never,
+        authStorage: {} as never,
+        modelRegistry: {} as never,
+      }),
+    });
+    try {
+      await expect(
+        testing.resolveImageCompressionPolicy({
+          cfg: {
+            models: {
+              providers: {
+                anthropic: {
+                  baseUrl: "https://api.anthropic.com",
+                  api: "anthropic-messages",
+                  models: [
+                    {
+                      id: "claude-opus-4.7-20260219",
+                      name: "Claude Opus 4.7 dated",
+                      reasoning: true,
+                      input: ["text", "image"],
+                      contextWindow: 200_000,
+                      maxTokens: 64_000,
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                      mediaInput: { image: { maxBytes: 1_000_000 } },
+                    },
+                  ],
+                },
               },
             },
+          } satisfies OpenClawConfig,
+          imageModelConfig: {
+            primary: "anthropic/claude-opus-4.7-20260219",
           },
-        } satisfies OpenClawConfig,
-        imageModelConfig: {
-          primary: "anthropic/claude-opus-4.7-20260219",
-        },
+          imageCount: 1,
+        }),
+      ).resolves.toEqual({
         imageCount: 1,
-      }),
-    ).resolves.toEqual({
-      imageCount: 1,
-      models: [
-        { maxBytes: 1_000_000, maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
-      ],
-    });
+        models: [
+          { maxBytes: 1_000_000, maxSidePx: 2576, preferredSidePx: 2576, tokenMode: "provider" },
+        ],
+      });
+    } finally {
+      testing.setProviderDepsForTest();
+    }
   });
 
   it("uses a model override as the compression candidate", async () => {

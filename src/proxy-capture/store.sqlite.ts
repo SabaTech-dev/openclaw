@@ -7,6 +7,8 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { normalizeNullableString as normalizeObservedValue } from "../shared/string-coerce.js";
+import { normalizeUniqueStringEntries } from "../shared/string-normalization.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -37,10 +39,6 @@ function parseMetaJson(metaJson: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function normalizeObservedValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function sortObservedCounts(counts: Map<string, number>): CaptureObservedDimension[] {
@@ -452,7 +450,7 @@ export class DebugProxyCaptureStore {
   }
 
   deleteSessions(sessionIds: string[]): { sessions: number; events: number; blobs: number } {
-    const uniqueSessionIds = [...new Set(sessionIds.map((id) => id.trim()).filter(Boolean))];
+    const uniqueSessionIds = normalizeUniqueStringEntries(sessionIds);
     if (uniqueSessionIds.length === 0) {
       return { sessions: 0, events: 0, blobs: 0 };
     }

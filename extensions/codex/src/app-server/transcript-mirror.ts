@@ -8,15 +8,11 @@ import {
   loadSqliteSessionTranscriptEvents,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 type MirroredAgentMessage = Extract<AgentMessage, { role: "user" | "assistant" | "toolResult" }>;
 
 const MIRROR_IDENTITY_META_KEY = "mirrorIdentity" as const;
-
-function normalizeOptionalString(value: string | null | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
-}
 
 function buildSenderLabel(params: {
   senderId?: string;

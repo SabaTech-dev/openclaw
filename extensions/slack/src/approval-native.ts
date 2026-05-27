@@ -390,3 +390,9 @@ export const slackApprovalCapability: ChannelApprovalCapability = {
 };
 
 export const slackNativeApprovalAdapter = splitChannelApprovalCapability(slackApprovalCapability);
+
+export const testing = {
+  resolveSessionSlackOriginTarget,
+  resolveTurnSourceSlackOriginTarget,
+  slackTargetsMatch,
+};

@@ -6,6 +6,7 @@ import {
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
 import {
+  deliveryContextFromChannelRoute,
   deliveryContextFromSession,
   mergeDeliveryContext,
   normalizeDeliveryContext,
@@ -141,9 +142,18 @@ export function upsertSessionEntry(
     sessionKey: string;
     entry: SessionEntry;
     conversationIdentities?: readonly ConversationIdentity[];
+    allowDropAcpMeta?: boolean;
   },
 ): void {
-  replaceSqliteSessionEntry(options);
+  const existing = readSessionEntryCandidate(options).entry;
+  const next = structuredClone(options.entry);
+  if (!options.allowDropAcpMeta && existing?.acp && !next.acp) {
+    next.acp = existing.acp;
+  }
+  replaceSqliteSessionEntry({
+    ...options,
+    entry: next,
+  });
 }
 
 export function deleteSessionEntry(
@@ -330,7 +340,7 @@ export async function updateLastRoute(params: {
     env: params.env,
   });
   const normalizedKey = normalizeSessionRowKey(sessionKey);
-  const routeContext = deliveryContextFromSession({ route: params.route });
+  const routeContext = deliveryContextFromChannelRoute(params.route);
   const explicitContext = normalizeDeliveryContext(params.deliveryContext);
   const inlineContext = normalizeDeliveryContext({
     channel,
@@ -352,7 +362,12 @@ export async function updateLastRoute(params: {
     explicitThreadFromDeliveryContext ??
     (threadId != null && threadId !== "" ? threadId : undefined);
   const explicitRouteProvided = Boolean(
-    explicitContext?.channel || explicitContext?.to || inlineContext?.channel || inlineContext?.to,
+    routeContext?.channel ||
+    routeContext?.to ||
+    explicitContext?.channel ||
+    explicitContext?.to ||
+    inlineContext?.channel ||
+    inlineContext?.to,
   );
   const clearThreadFromFallback = explicitRouteProvided && explicitThreadValue == null;
   return await patchSessionEntry({

@@ -10,12 +10,17 @@ import {
   hasUsableOAuthCredential,
   isSafeToAdoptMainStoreOAuthIdentity,
 } from "../../../agents/auth-profiles/oauth-shared.js";
-import { resolveAuthStorePath } from "../../../agents/auth-profiles/paths.js";
+import {
+  resolveAuthProfileStoreKey,
+  resolveAuthStorePath,
+} from "../../../agents/auth-profiles/paths.js";
 import { loadPersistedAuthProfileStore } from "../../../agents/auth-profiles/persisted.js";
+import { readAuthProfileStorePayloadResultReadOnly } from "../../../agents/auth-profiles/sqlite-storage.js";
 import { saveAuthProfileStore } from "../../../agents/auth-profiles/store.js";
 import type { AuthProfileStore, OAuthCredential } from "../../../agents/auth-profiles/types.js";
 import { resolveStateDir } from "../../../config/paths.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { isRecord } from "../../../shared/record-coerce.js";
 import { withOpenClawStateLock } from "../../../state/openclaw-state-lock.js";
 import { shortenHomePath } from "../../../utils.js";
 
@@ -36,6 +41,55 @@ const AUTH_STORE_REPAIR_LOCK_OPTIONS = {
   scope: "auth-profile-store.repair",
   stale: 30_000,
 } as const;
+
+const LEGACY_OAUTH_REF_SOURCE = "openclaw-credentials";
+const LEGACY_OAUTH_REF_PROVIDER = "openai-codex";
+
+function isLegacyOAuthRef(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.source === LEGACY_OAUTH_REF_SOURCE &&
+    value.provider === LEGACY_OAUTH_REF_PROVIDER &&
+    typeof value.id === "string" &&
+    /^[a-f0-9]{32}$/.test(value.id)
+  );
+}
+
+async function loadRawAuthProfileStore(params: {
+  agentDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<Record<string, unknown> | null> {
+  const storeKey = resolveAuthProfileStoreKey(params.agentDir, params.env);
+  const sqlitePayload = readAuthProfileStorePayloadResultReadOnly(storeKey, { env: params.env });
+  if (sqlitePayload.exists && isRecord(sqlitePayload.value)) {
+    return sqlitePayload.value;
+  }
+
+  const authPath = resolveAuthStorePath(params.agentDir);
+  try {
+    const raw = JSON.parse(await fs.readFile(authPath, "utf8")) as unknown;
+    return isRecord(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasLegacyOAuthSidecarRef(raw: Record<string, unknown> | null, profileId: string): boolean {
+  if (!raw || !isRecord(raw.profiles)) {
+    return false;
+  }
+  const profile = raw.profiles[profileId];
+  if (!isRecord(profile)) {
+    return false;
+  }
+  // Removal-only guard for #79006 sidecar OAuth profiles. Do not add OS-level
+  // keychain integrations; doctor must migrate these profiles, not delete them.
+  return (
+    profile.type === "oauth" &&
+    profile.provider === LEGACY_OAUTH_REF_PROVIDER &&
+    isLegacyOAuthRef(profile.oauthRef)
+  );
+}
 
 async function collectStateAgentDirs(env: NodeJS.ProcessEnv): Promise<string[]> {
   const agentsRoot = path.join(resolveStateDir(env), "agents");
@@ -107,12 +161,16 @@ export async function scanStaleOAuthProfileShadows(params: {
     if (authPath === mainAuthPath) {
       continue;
     }
+    const rawLocalStore = await loadRawAuthProfileStore({ agentDir, env });
     const localStore = loadPersistedAuthProfileStore(agentDir, { env });
     if (!localStore) {
       continue;
     }
     for (const [profileId, local] of Object.entries(localStore.profiles)) {
       if (local.type !== "oauth") {
+        continue;
+      }
+      if (hasLegacyOAuthSidecarRef(rawLocalStore, profileId)) {
         continue;
       }
       const main = mainStore.profiles[profileId];
@@ -194,10 +252,22 @@ async function repairStaleOAuthProfilesForAgent(params: {
       if (!store) {
         return { status: "missing" };
       }
+      const rawStore = await loadRawAuthProfileStore({
+        agentDir: params.agentDir,
+        env: params.env,
+      });
+      const profileIds = new Set(
+        [...params.profileIds].filter(
+          (profileId) => !hasLegacyOAuthSidecarRef(rawStore, profileId),
+        ),
+      );
+      if (profileIds.size === 0) {
+        return { status: "unchanged" };
+      }
       const result = removeStaleProfilesFromStore({
         store,
         mainStore: params.mainStore,
-        profileIds: params.profileIds,
+        profileIds,
         now: params.now,
       });
       if (result.removedProfileIds.length === 0) {

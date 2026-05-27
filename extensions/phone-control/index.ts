@@ -3,6 +3,8 @@ import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-ru
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
+  normalizeStringEntries,
+  sortUniqueStrings,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   definePluginEntry,
@@ -47,7 +49,7 @@ const GROUP_COMMANDS: Record<Exclude<ArmGroup, "all">, string[]> = {
 };
 
 function uniqSorted(values: string[]): string[] {
-  return [...new Set(values.map((v) => v.trim()).filter(Boolean))].toSorted();
+  return sortUniqueStrings(normalizeStringEntries(values));
 }
 
 function resolveCommandsForGroup(group: ArmGroup): string[] {

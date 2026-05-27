@@ -51,7 +51,6 @@ import {
   resolveAgentSessionDatabaseTargetsSync,
   resolveAgentMainSessionKey,
   resolveFreshSessionTotalTokens,
-  type SessionCompactionCheckpointReason,
   type SessionEntry,
   type SessionScope,
 } from "../config/sessions.js";
@@ -258,54 +257,52 @@ function resolveNonNegativeNumber(value: number | null | undefined): number | un
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-const VALID_COMPACTION_CHECKPOINT_REASONS = new Set<SessionCompactionCheckpointReason>([
-  "manual",
-  "auto-threshold",
-  "overflow-retry",
-  "timeout-retry",
-]);
+type SessionCompactionCheckpointEntry = NonNullable<SessionEntry["compactionCheckpoints"]>[number];
 
-function isSessionCompactionCheckpoint(
-  checkpoint: unknown,
-): checkpoint is NonNullable<SessionEntry["compactionCheckpoints"]>[number] {
-  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) {
+function isProjectableCompactionCheckpoint(
+  value: unknown,
+): value is SessionCompactionCheckpointEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
-  const candidate = checkpoint as Partial<
-    NonNullable<SessionEntry["compactionCheckpoints"]>[number]
-  >;
+  const checkpoint = value as {
+    checkpointId?: unknown;
+    createdAt?: unknown;
+    reason?: unknown;
+  };
   return (
-    typeof candidate.checkpointId === "string" &&
-    candidate.checkpointId.length > 0 &&
-    typeof candidate.createdAt === "number" &&
-    Number.isFinite(candidate.createdAt) &&
-    typeof candidate.reason === "string" &&
-    VALID_COMPACTION_CHECKPOINT_REASONS.has(candidate.reason)
+    Boolean(normalizeOptionalString(checkpoint.checkpointId)) &&
+    typeof checkpoint.createdAt === "number" &&
+    Number.isFinite(checkpoint.createdAt) &&
+    (checkpoint.reason === "manual" ||
+      checkpoint.reason === "auto-threshold" ||
+      checkpoint.reason === "overflow-retry" ||
+      checkpoint.reason === "timeout-retry")
   );
 }
 
-function normalizedCompactionCheckpoints(
+function resolveProjectableCompactionCheckpoints(
   entry?: Pick<SessionEntry, "compactionCheckpoints"> | null,
-): NonNullable<SessionEntry["compactionCheckpoints"]> {
-  return Array.isArray(entry?.compactionCheckpoints)
-    ? entry.compactionCheckpoints.filter(isSessionCompactionCheckpoint)
-    : [];
+): SessionCompactionCheckpointEntry[] {
+  const checkpoints = entry?.compactionCheckpoints;
+  if (!Array.isArray(checkpoints) || checkpoints.length === 0) {
+    return [];
+  }
+  return checkpoints.filter(isProjectableCompactionCheckpoint);
 }
 
 function resolveLatestCompactionCheckpoint(
-  entry?: Pick<SessionEntry, "compactionCheckpoints"> | null,
-): NonNullable<SessionEntry["compactionCheckpoints"]>[number] | undefined {
-  const checkpoints = normalizedCompactionCheckpoints(entry);
-  if (checkpoints.length === 0) {
-    return undefined;
-  }
-  return checkpoints.reduce((latest, checkpoint) =>
-    !latest || checkpoint.createdAt > latest.createdAt ? checkpoint : latest,
+  checkpoints: readonly SessionCompactionCheckpointEntry[],
+): SessionCompactionCheckpointEntry | undefined {
+  return checkpoints.reduce<SessionCompactionCheckpointEntry | undefined>(
+    (latest, checkpoint) =>
+      !latest || checkpoint.createdAt > latest.createdAt ? checkpoint : latest,
+    undefined,
   );
 }
 
 function buildCompactionCheckpointPreview(
-  checkpoint: NonNullable<SessionEntry["compactionCheckpoints"]>[number] | undefined,
+  checkpoint: SessionCompactionCheckpointEntry | undefined,
 ): GatewaySessionRow["latestCompactionCheckpoint"] {
   if (!checkpoint) {
     return undefined;
@@ -1524,8 +1521,12 @@ export function buildGatewaySessionRow(params: {
         params.storeChildSessionsByKey.get(key),
       )
     : resolveChildSessionKeys(key, store, now, rowContext?.subagentRuns);
+  const compactionCheckpoints = resolveProjectableCompactionCheckpoints(entry);
+  const compactionCheckpointCount = Array.isArray(entry?.compactionCheckpoints)
+    ? compactionCheckpoints.length
+    : undefined;
   const latestCompactionCheckpoint = buildCompactionCheckpointPreview(
-    resolveLatestCompactionCheckpoint(entry),
+    resolveLatestCompactionCheckpoint(compactionCheckpoints),
   );
   const selectedOrRuntimeModelProvider = selectedModel?.provider ?? modelProvider;
   const selectedOrRuntimeModel = selectedModel?.model ?? model;
@@ -1658,7 +1659,7 @@ export function buildGatewaySessionRow(params: {
     lastTo: deliveryFields.lastTo,
     lastAccountId: deliveryFields.lastAccountId,
     lastThreadId: deliveryFields.lastThreadId,
-    compactionCheckpointCount: normalizedCompactionCheckpoints(entry).length,
+    compactionCheckpointCount,
     latestCompactionCheckpoint,
     pluginExtensions: pluginExtensions.length > 0 ? pluginExtensions : undefined,
   };

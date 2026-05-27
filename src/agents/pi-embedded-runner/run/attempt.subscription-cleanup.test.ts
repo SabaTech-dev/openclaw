@@ -39,6 +39,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
         },
       },
       sessionManager: {},
+      sessionLock: { release: async () => order.push("release") },
       aborted: true,
       abortSettlePromise: settle.promise,
       runId: "run-1",
@@ -52,7 +53,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
     settle.resolve();
     await cleanupPromise;
 
-    expect(order).toEqual(["guard", "flush", "dispose"]);
+    expect(order).toEqual(["guard", "flush", "dispose", "release"]);
   });
 
   it("continues cleanup after the aborted settle timeout", async () => {
@@ -71,6 +72,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
         },
       },
       sessionManager: {},
+      sessionLock: { release: async () => order.push("release") },
       aborted: true,
       abortSettlePromise: new Promise(() => {}),
       runId: "run-1",
@@ -83,7 +85,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
     await vi.advanceTimersByTimeAsync(1);
     await cleanupPromise;
 
-    expect(order).toEqual(["flush", "dispose"]);
+    expect(order).toEqual(["flush", "dispose", "release"]);
   });
 
   it("does not wait for the settle promise on non-aborted cleanup", async () => {
@@ -96,6 +98,7 @@ describe("cleanupEmbeddedAttemptResources", () => {
         dispose,
       },
       sessionManager: {},
+      sessionLock: { release: async () => {} },
       aborted: false,
       abortSettlePromise: new Promise(() => {}),
       runId: "run-1",

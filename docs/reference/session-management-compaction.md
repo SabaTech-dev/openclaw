@@ -53,6 +53,9 @@ OpenClaw persists sessions in two layers:
    - Stored in SQLite for OpenClaw-owned runtime paths; JSONL files are legacy
      doctor-import inputs or explicit support artifacts, not runtime
      compatibility sidecars
+   - Compaction checkpoints are metadata over the compacted successor
+     transcript plus SQLite pre-compaction snapshots. New compactions do not
+     write a second `.checkpoint.*.jsonl` copy.
 
 - Runtime code passes structured agent/session scope. There is no active
   transcript file, URI, or locator layer.
@@ -289,6 +292,10 @@ In the embedded Pi agent, auto-compaction triggers in two cases:
 number of tokens`, `input token count exceeds the maximum number of input
 tokens`, `input is too long for the model`, `ollama error: context length
 exceeded`, and similar provider-shaped variants) → compact → retry.
+   When the provider reports the attempted token count, OpenClaw forwards that
+   observed count into overflow recovery compaction. If the provider confirms
+   overflow but does not expose a parseable count, OpenClaw passes a minimally
+   over-budget synthetic count to compaction engines and diagnostics.
    If overflow recovery still fails, OpenClaw surfaces explicit guidance to the
    user and preserves the current session mapping instead of silently rotating
    the session key to a fresh session id. The next step is operator-controlled:
@@ -366,6 +373,8 @@ OpenClaw also enforces a safety floor for embedded runs:
   OpenClaw rewrites the active SQLite transcript to the compacted successor
   after compaction. The old full transcript is available only through the
   SQLite pre-compaction checkpoint snapshot while retained.
+  Branch/restore checkpoint actions use that compacted successor; legacy
+  pre-compaction checkpoint files remain readable while referenced.
 
 Why: leave enough headroom for multi-turn "housekeeping" (like memory writes) before compaction becomes unavoidable.
 

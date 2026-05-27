@@ -1,19 +1,21 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeStoredModelsConfigRaw } from "../agents/models-config-store.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   resetGatewayModelPricingCacheForTest,
   setGatewayModelPricingForTest,
 } from "../gateway/model-pricing-cache-state.js";
+import * as manifestModelIdNormalization from "../plugins/manifest-model-id-normalization.js";
 import {
   resetUsageFormatCachesForTest,
   estimateUsageCost,
   formatTokenCount,
   formatUsd,
   resolveModelCostConfig,
+  resolveModelCostConfigFingerprint,
   type PricingTier,
 } from "./usage-format.js";
 
@@ -284,6 +286,372 @@ describe("usage-format", () => {
     });
   });
 
+  it("skips manifest model normalization for raw cost lookup", () => {
+    const manifestSpy = vi.spyOn(
+      manifestModelIdNormalization,
+      "normalizeProviderModelIdWithManifest",
+    );
+    const config = {
+      models: {
+        providers: {
+          "demo-raw": {
+            models: [
+              {
+                id: "demo-model",
+                cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-raw",
+        model: "demo-model",
+        config,
+        allowPluginNormalization: false,
+      }),
+    ).toEqual({
+      input: 1,
+      output: 2,
+      cacheRead: 3,
+      cacheWrite: 4,
+    });
+    expect(manifestSpy).not.toHaveBeenCalled();
+  });
+
+  it("observes in-place config pricing changes after a cached lookup", () => {
+    const model = {
+      id: "demo-model",
+      cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+    };
+    const config = {
+      models: {
+        providers: {
+          "demo-mutated": {
+            models: [model],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-mutated",
+        model: "demo-model",
+        config,
+      })?.input,
+    ).toBe(1);
+
+    model.cost.input = 9;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-mutated",
+        model: "demo-model",
+        config,
+      })?.input,
+    ).toBe(9);
+  });
+
+  it("observes structural config pricing changes after a cached lookup", () => {
+    const models = [
+      {
+        id: "demo-model",
+        cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+      },
+    ];
+    const config = {
+      models: {
+        providers: {
+          "demo-structural": { models },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-structural",
+        model: "demo-model",
+        config,
+      })?.input,
+    ).toBe(1);
+
+    models.push({
+      id: "new-model",
+      cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8 },
+    });
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-structural",
+        model: "new-model",
+        config,
+      })?.input,
+    ).toBe(5);
+
+    models.splice(0, 1);
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-structural",
+        model: "demo-model",
+        config,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("observes replaced config cost objects after a cached lookup", () => {
+    const model = {
+      id: "demo-model",
+      cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+    };
+    const config = {
+      models: {
+        providers: {
+          "demo-replaced-cost": { models: [model] },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-replaced-cost",
+        model: "demo-model",
+        config,
+      })?.input,
+    ).toBe(1);
+
+    model.cost = { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 };
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-replaced-cost",
+        model: "demo-model",
+        config,
+      })?.input,
+    ).toBe(9);
+  });
+
+  it("ignores malformed raw tier ranges while caching config pricing", () => {
+    const config = {
+      models: {
+        providers: {
+          "demo-bad-tier": {
+            models: [
+              {
+                id: "demo-model",
+                cost: {
+                  input: 1,
+                  output: 2,
+                  cacheRead: 3,
+                  cacheWrite: 4,
+                  tieredPricing: [
+                    { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, range: undefined },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-bad-tier",
+        model: "demo-model",
+        config,
+      }),
+    ).toEqual({
+      input: 1,
+      output: 2,
+      cacheRead: 3,
+      cacheWrite: 4,
+    });
+  });
+
+  it("skips metadata-only model rows while caching configured pricing", async () => {
+    const metadataOnlyModel = { id: "metadata-only" } as {
+      id: string;
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    };
+    const config = {
+      models: {
+        providers: {
+          "demo-metadata-row": {
+            models: [
+              metadataOnlyModel,
+              {
+                id: "priced-model",
+                cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-metadata-row",
+        model: "metadata-only",
+        config,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-metadata-row",
+        model: "priced-model",
+        config,
+      })?.input,
+    ).toBe(1);
+
+    metadataOnlyModel.cost = { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 };
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-metadata-row",
+        model: "metadata-only",
+        config,
+      })?.input,
+    ).toBe(9);
+
+    writeStoredModelsConfigRaw(
+      agentDir,
+      `${JSON.stringify({
+        providers: {
+          "demo-metadata-json": {
+            models: [
+              { id: "metadata-only" },
+              {
+                id: "priced-model",
+                cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8 },
+              },
+            ],
+          },
+        },
+      })}\n`,
+    );
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-metadata-json",
+        model: "priced-model",
+      })?.input,
+    ).toBe(5);
+  });
+
+  it("updates pricing fingerprints when metadata-only model rows gain pricing", () => {
+    const metadataOnlyModel = { id: "metadata-only" } as {
+      id: string;
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    };
+    const config = {
+      models: {
+        providers: {
+          "demo-metadata-fingerprint": {
+            models: [metadataOnlyModel],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    const before = resolveModelCostConfigFingerprint(config);
+    metadataOnlyModel.cost = { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 };
+    const after = resolveModelCostConfigFingerprint(config);
+
+    expect(after).not.toBe(before);
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-metadata-fingerprint",
+        model: "metadata-only",
+        config,
+      })?.input,
+    ).toBe(9);
+  });
+
+  it("retries stored model catalog after an initial missing read", async () => {
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-late",
+        model: "demo-model",
+      }),
+    ).toBeUndefined();
+
+    writeStoredModelsConfigRaw(
+      agentDir,
+      `${JSON.stringify({
+        providers: {
+          "demo-late": {
+            models: [
+              {
+                id: "demo-model",
+                cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+              },
+            ],
+          },
+        },
+      })}\n`,
+    );
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-late",
+        model: "demo-model",
+      })?.input,
+    ).toBe(1);
+  });
+
+  it("reloads stored model catalog pricing when the stored timestamp changes", async () => {
+    writeStoredModelsConfigRaw(
+      agentDir,
+      `${JSON.stringify({
+        providers: {
+          "demo-reload": {
+            models: [
+              {
+                id: "demo-model",
+                cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+              },
+            ],
+          },
+        },
+      })}\n`,
+      { now: () => 1000 },
+    );
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-reload",
+        model: "demo-model",
+      })?.input,
+    ).toBe(1);
+
+    writeStoredModelsConfigRaw(
+      agentDir,
+      `${JSON.stringify({
+        providers: {
+          "demo-reload": {
+            models: [
+              {
+                id: "demo-model",
+                cost: { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 },
+              },
+            ],
+          },
+        },
+      })}\n`,
+      { now: () => 2000 },
+    );
+
+    expect(
+      resolveModelCostConfig({
+        provider: "demo-reload",
+        model: "demo-model",
+      })?.input,
+    ).toBe(9);
+  });
+
   // -----------------------------------------------------------------------
   // Tiered pricing tests
   // -----------------------------------------------------------------------
@@ -445,6 +813,19 @@ describe("usage-format", () => {
     });
 
     expect(total).toBeCloseTo(0.00075, 8);
+  });
+
+  it("reuses sorted tier order for repeated estimates", () => {
+    const tiers: PricingTier[] = [
+      { input: 1, output: 10, cacheRead: 0, cacheWrite: 0, range: [100, 200] },
+      { input: 2, output: 20, cacheRead: 0, cacheWrite: 0, range: [0, 100] },
+    ];
+    const tierSortSpy = vi.spyOn(tiers, "toSorted");
+    const cost = { input: 1, output: 10, cacheRead: 0, cacheWrite: 0, tieredPricing: tiers };
+
+    expect(estimateUsageCost({ usage: { input: 150, output: 60 }, cost })).toBeCloseTo(0.00075, 8);
+    expect(estimateUsageCost({ usage: { input: 50, output: 60 }, cost })).toBeCloseTo(0.0013, 8);
+    expect(tierSortSpy).toHaveBeenCalledTimes(1);
   });
 
   it("bills malformed tier gaps at a whole-request fallback tier", () => {

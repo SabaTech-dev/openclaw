@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { tryReadJsonSync } from "../infra/json-files.js";
+import { isRecord } from "../shared/record-coerce.js";
 import { resolveDefaultPluginNpmDir, validatePluginId } from "./install-paths.js";
 import {
   readPersistedInstalledPluginIndex,
@@ -9,10 +10,6 @@ import {
   readPersistedInstalledPluginIndexSync,
 } from "./installed-plugin-index-persisted-read.js";
 import { type InstalledPluginIndexStoreOptions } from "./installed-plugin-index-store-options.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function cloneInstallRecords(
   records: Record<string, PluginInstallRecord> | undefined,

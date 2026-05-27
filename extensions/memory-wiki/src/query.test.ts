@@ -24,7 +24,6 @@ const {
     return match?.[1] ?? "main";
   }),
 }));
-const loadCombinedSessionStoreForGatewayMock = loadCombinedSessionEntriesForGatewayMock;
 
 vi.mock("openclaw/plugin-sdk/memory-host-search", () => ({
   getActiveMemorySearchManager: getActiveMemorySearchManagerMock,
@@ -829,9 +828,9 @@ describe("searchMemoryWiki", () => {
         search: { backend: "shared", corpus: "memory" },
       },
     });
-    loadCombinedSessionStoreForGatewayMock.mockReturnValue({
-      storePath: "(test)",
-      store: {
+    loadCombinedSessionEntriesForGatewayMock.mockReturnValue({
+      databasePath: "(test)",
+      entries: {
         "agent:main:abc-uuid": {
           sessionId: "abc-uuid",
           updatedAt: 1,
@@ -1504,7 +1503,10 @@ describe("getMemoryWikiPage", () => {
         search: { backend: "shared", corpus: "memory" },
       },
     });
-    loadCombinedSessionStoreForGatewayMock.mockReturnValue({ storePath: "(test)", store: {} });
+    loadCombinedSessionEntriesForGatewayMock.mockReturnValue({
+      databasePath: "(test)",
+      entries: {},
+    });
     const manager = createMemoryManager({
       readResult: {
         path: "qmd/sessions-main/deleted-uuid-jsonl-deleted-2026-02-16t22-26-33-000z.md",

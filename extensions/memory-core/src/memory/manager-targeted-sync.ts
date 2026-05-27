@@ -33,7 +33,7 @@ export async function runMemoryTargetedSessionSync(params: {
     targetSessionTranscriptKeys?: string[];
     progress?: TargetedSyncProgress;
   }) => Promise<void>;
-  shouldFallbackOnError: (message: string) => boolean;
+  shouldFallbackOnError: (err: unknown) => boolean;
   activateFallbackProvider: (reason: string) => Promise<boolean>;
   runFullReindex: (params: {
     reason?: string;
@@ -64,7 +64,7 @@ export async function runMemoryTargetedSessionSync(params: {
   } catch (err) {
     const reason = formatErrorMessage(err);
     const activated =
-      params.shouldFallbackOnError(reason) && (await params.activateFallbackProvider(reason));
+      params.shouldFallbackOnError(err) && (await params.activateFallbackProvider(reason));
     if (!activated) {
       throw err;
     }

@@ -20,6 +20,12 @@ import {
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { parseAgentSessionKey, parseThreadSessionSuffix } from "openclaw/plugin-sdk/routing";
+import {
+  asOptionalRecord as asRecord,
+  normalizeOptionalString,
+  normalizeStringEntries,
+  uniqueStrings,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_ID = "main";
@@ -309,11 +315,6 @@ let minimumTimeoutMs = DEFAULT_MIN_TIMEOUT_MS;
 let setupGraceTimeoutMs = DEFAULT_SETUP_GRACE_TIMEOUT_MS;
 let timeoutPartialDataGraceMs = TIMEOUT_PARTIAL_DATA_GRACE_MS;
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
 type ActiveMemoryThinkingLevel =
   | "off"
   | "minimal"
@@ -520,10 +521,6 @@ function resolveCanonicalSessionKeyFromSessionId(params: {
   }
 }
 
-function normalizeOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function normalizeActiveMemoryChatType(value: unknown): ActiveMemoryChatType | undefined {
   if (value === "direct" || value === "group" || value === "channel" || value === "explicit") {
     return value;
@@ -544,7 +541,6 @@ function normalizeConversationIdValue(value: unknown): string | undefined {
   }
   return trimmed;
 }
-
 function formatRuntimeToolsAllowSource(toolsAllow: readonly string[]): string {
   return `runtime toolsAllow: ${toolsAllow.join(", ")}`;
 }
@@ -789,9 +785,7 @@ function normalizePluginConfig(
     : [];
   return {
     enabled: raw.enabled !== false,
-    agents: Array.isArray(raw.agents)
-      ? raw.agents.map((agentId) => agentId.trim()).filter(Boolean)
-      : [],
+    agents: Array.isArray(raw.agents) ? normalizeStringEntries(raw.agents) : [],
     model: typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : undefined,
     modelFallback:
       typeof raw.modelFallback === "string" && raw.modelFallback.trim()
@@ -1414,11 +1408,11 @@ function buildPluginDebugLine(params: {
     warning && action && !cleaned
       ? `${warning} ${action}`
       : [warning, action && !cleaned ? action : ""]
-          .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
+          .filter((value): value is string => Boolean(value))
           .join(" | ");
-  const messages = [warningAction, cleaned]
-    .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
-    .join(" | ");
+  const messages = uniqueStrings(
+    [warningAction, cleaned].filter((value): value is string => Boolean(value)),
+  ).join(" | ");
   const trailing = messages;
   if (prefix && trailing) {
     return `${ACTIVE_MEMORY_DEBUG_PREFIX} ${prefix} | ${trailing}`;

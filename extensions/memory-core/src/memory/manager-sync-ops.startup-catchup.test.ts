@@ -10,23 +10,27 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryManagerSyncOps } from "./manager-sync-ops.js";
 
-const { listSessionTranscriptScopesForAgentMock, readSessionTranscriptDeltaStatsMock } =
-  vi.hoisted(() => ({
+const { listSessionTranscriptScopesForAgentMock, readSessionTranscriptDeltaStatsMock } = vi.hoisted(
+  () => ({
     listSessionTranscriptScopesForAgentMock: vi.fn(),
     readSessionTranscriptDeltaStatsMock: vi.fn(),
-  }));
+  }),
+);
 
-vi.mock("openclaw/plugin-sdk/memory-core-host-engine-session-transcripts", async (importOriginal) => {
-  const actual =
-    await importOriginal<
-      typeof import("openclaw/plugin-sdk/memory-core-host-engine-session-transcripts")
-    >();
-  return {
-    ...actual,
-    listSessionTranscriptScopesForAgent: listSessionTranscriptScopesForAgentMock,
-    readSessionTranscriptDeltaStats: readSessionTranscriptDeltaStatsMock,
-  };
-});
+vi.mock(
+  "openclaw/plugin-sdk/memory-core-host-engine-session-transcripts",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("openclaw/plugin-sdk/memory-core-host-engine-session-transcripts")
+      >();
+    return {
+      ...actual,
+      listSessionTranscriptScopesForAgent: listSessionTranscriptScopesForAgentMock,
+      readSessionTranscriptDeltaStats: readSessionTranscriptDeltaStatsMock,
+    };
+  },
+);
 
 type MemoryIndexEntry = {
   path: string;
@@ -74,6 +78,8 @@ class SessionStartupCatchupHarness extends MemoryManagerSyncOps {
   };
   protected readonly vector = { enabled: false, available: false };
   protected readonly cache = { enabled: false };
+  protected providerUnavailableReason?: string;
+  protected providerLifecycle = { mode: "active" as const, providerId: "test" };
   protected db: DatabaseSync;
 
   readonly syncCalls: SyncParams[] = [];
@@ -127,6 +133,8 @@ class SessionStartupCatchupHarness extends MemoryManagerSyncOps {
   }
 
   protected pruneEmbeddingCacheIfNeeded(): void {}
+
+  protected resetProviderInitializationForRetry(): void {}
 
   protected async indexFile(
     _entry: MemoryIndexEntry,

@@ -252,6 +252,7 @@ export type DiagnosticsOtelConfig = {
         toolInputs?: boolean;
         toolOutputs?: boolean;
         systemPrompt?: boolean;
+        toolDefinitions?: boolean;
       };
 };
 

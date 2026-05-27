@@ -14,6 +14,7 @@ import {
   type AssistantPhase,
 } from "../shared/chat-message-content.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { uniqueStrings } from "../shared/string-normalization.js";
 import type { AgentEvent, AgentMessage } from "./agent-core-contract.js";
 import type { AssistantMessage } from "./pi-ai-contract.js";
 import {
@@ -254,7 +255,7 @@ export function readPendingToolMediaReply(
   }
   return {
     mediaUrls: state.pendingToolMediaUrls.length
-      ? Array.from(new Set(state.pendingToolMediaUrls))
+      ? uniqueStrings(state.pendingToolMediaUrls)
       : undefined,
     audioAsVoice: state.pendingToolAudioAsVoice || undefined,
     trustedLocalMedia: state.pendingToolTrustedLocalMedia || undefined,
@@ -288,7 +289,7 @@ function mergeReplyDirectiveResults(
   if (!second) {
     return first;
   }
-  const mediaUrls = Array.from(new Set([...(first.mediaUrls ?? []), ...(second.mediaUrls ?? [])]));
+  const mediaUrls = uniqueStrings([...(first.mediaUrls ?? []), ...(second.mediaUrls ?? [])]);
   return {
     text: `${first.text ?? ""}${second.text ?? ""}`,
     mediaUrls: mediaUrls.length ? mediaUrls : undefined,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE } from "../../shared/assistant-error-format.js";
 import type { AssistantMessage } from "../pi-ai-contract.js";
 import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
-import { formatAssistantErrorText } from "./errors.js";
+import { formatAssistantErrorText, isLikelyContextOverflowError } from "./errors.js";
 
 const { toolPolicyAuditInfo } = vi.hoisted(() => ({
   toolPolicyAuditInfo: vi.fn(),
@@ -89,5 +89,15 @@ describe("formatAssistantErrorText streaming JSON parse classification", () => {
         sandboxMode: "non-main",
       },
     );
+  });
+});
+
+describe("isLikelyContextOverflowError", () => {
+  it("detects Codex promptError wording for a full context window", () => {
+    expect(
+      isLikelyContextOverflowError(
+        "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.",
+      ),
+    ).toBe(true);
   });
 });

@@ -33,6 +33,7 @@ import {
 import { defaultSlotIdForKey } from "../plugins/slots.js";
 import { getProviderEnvVars } from "../secrets/provider-env-vars.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { uniqueStrings } from "../shared/string-normalization.js";
 import { note } from "../terminal/note.js";
 import { isRecord, resolveUserPath } from "../utils.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
@@ -572,7 +573,9 @@ function resolvePrimaryMemoryProviderEnvVar(provider: string): string {
 }
 
 function formatMemoryProviderEnvVarList(providers: Array<{ envVars: string[] }>): string {
-  return [...new Set(providers.flatMap((provider) => provider.envVars).filter(Boolean))].join(", ");
+  return uniqueStrings(providers.flatMap((provider) => provider.envVars).filter(Boolean)).join(
+    ", ",
+  );
 }
 
 function buildGatewayProbeWarning(

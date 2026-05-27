@@ -25,6 +25,7 @@ const { createSessionFixtureDir, openClient } = setupGatewaySessionsTestHarness(
 test("sessions.compaction.* lists checkpoints and branches or restores from pre-compaction snapshots", async () => {
   const { dir } = await createSessionFixtureDir();
   const fixture = await createCheckpointFixture(dir);
+  expect((await fs.readdir(dir)).some((file) => file.includes(".checkpoint."))).toBe(false);
   const checkpointCreatedAt = Date.now();
   upsertSessionEntry({
     agentId: "main",

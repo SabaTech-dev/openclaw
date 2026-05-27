@@ -60,7 +60,7 @@ vi.mock("../../agents/model-auth.js", () => {
         provider: string;
       }) => {
         const apiKey = resolveConfigKey(params.cfg, params.provider);
-        if (!apiKey || apiKey === "secretref-managed") {
+        if (!apiKey || apiKey === "secretref-managed" || apiKey.startsWith("oauth:")) {
           return null;
         }
         if (apiKey === "OPENAI_API_KEY") {
@@ -190,6 +190,18 @@ describe("resolveProviderAuthOverview", () => {
     expect(overview.effective.kind).toBe("missing");
     expect(overview.effective.detail).toBe("missing");
     expect(overview.modelCatalog?.value).toContain(`marker(${NON_ENV_SECRETREF_MARKER})`);
+  });
+
+  it("treats OAuth delegation markers as effective model catalog auth", () => {
+    const overview = withEnv({ OPENAI_API_KEY: undefined }, () =>
+      resolveOpenAiOverview("oauth:openai-codex"),
+    );
+
+    expect(overview.effective).toEqual({
+      kind: "model_catalog",
+      detail: "marker(oauth:openai-codex)",
+    });
+    expect(overview.modelCatalog?.value).toBe("marker(oauth:openai-codex)");
   });
 
   it("keeps env-var-shaped model catalog values masked to avoid accidental plaintext exposure", () => {

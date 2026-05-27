@@ -339,6 +339,8 @@ describe("runCodexAppServerSideQuestion", () => {
       cwd: "/tmp/workspace",
       authProfileId: "openai-codex:work",
       model: "gpt-5.5",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(0).toISOString(),
     });
@@ -381,14 +383,16 @@ describe("runCodexAppServerSideQuestion", () => {
       "developerInstructions",
       "ephemeral",
       "model",
+      "personality",
       "sandbox",
       "threadId",
       "threadSource",
     ]);
     expect(forkParams?.threadId).toBe("parent-thread");
     expect(forkParams?.model).toBe("gpt-5.5");
-    expect(forkParams?.approvalPolicy).toBe("never");
-    expect(forkParams?.sandbox).toBe("danger-full-access");
+    expect(forkParams?.personality).toBe("none");
+    expect(forkParams?.approvalPolicy).toBe("on-request");
+    expect(forkParams?.sandbox).toBe("workspace-write");
     expect(forkParams?.ephemeral).toBe(true);
     expect(forkParams?.threadSource).toBe("user");
     expect(forkParams?.approvalsReviewer).toBe("user");
@@ -417,14 +421,28 @@ describe("runCodexAppServerSideQuestion", () => {
         threadId: "side-thread",
         input: [{ type: "text", text: "What changed?", text_elements: [] }],
         model: "gpt-5.5",
+        personality: "none",
+        effort: null,
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: "gpt-5.5",
+            reasoning_effort: null,
+            developer_instructions: null,
+          },
+        },
       }),
-      expect.any(Object),
+      { timeoutMs: 60_000, signal: undefined },
     );
-    expect(client.request).toHaveBeenLastCalledWith(
+    const turnStartCall = client.request.mock.calls.find(([method]) => method === "turn/start");
+    const turnStartParams = turnStartCall?.[1] as Record<string, unknown> | undefined;
+    expect(turnStartParams).not.toHaveProperty("approvalPolicy");
+    expect(turnStartParams).not.toHaveProperty("sandboxPolicy");
+    expect(client.request.mock.calls.at(-1)).toEqual([
       "thread/unsubscribe",
       { threadId: "side-thread" },
       expect.any(Object),
-    );
+    ]);
     expect(client.request).not.toHaveBeenCalledWith(
       "turn/interrupt",
       expect.anything(),
@@ -516,12 +534,7 @@ describe("runCodexAppServerSideQuestion", () => {
           sessionKey: "agent:main:session-1",
           runId: "run-side-1",
           channelId: "voice-room",
-          allowedEvents: [
-            "pre_tool_use",
-            "post_tool_use",
-            "permission_request",
-            "before_agent_finalize",
-          ],
+          allowedEvents: ["pre_tool_use", "post_tool_use", "before_agent_finalize"],
         });
         return threadResult("side-thread");
       }
@@ -560,12 +573,7 @@ describe("runCodexAppServerSideQuestion", () => {
     expect(config?.["features.hooks"]).toBe(true);
     expect(config?.["features.code_mode"]).toBe(true);
     expect(config?.["features.code_mode_only"]).toBe(false);
-    const permissionHooks = config?.["hooks.PermissionRequest"] as
-      | Array<{ hooks?: Array<{ command?: string; timeout?: number; type?: string }> }>
-      | undefined;
-    const permissionCommand = permissionHooks?.[0]?.hooks?.[0];
-    expect(permissionCommand?.type).toBe("command");
-    expect(permissionCommand?.timeout).toBe(9);
+    expect(config?.["hooks.PermissionRequest"]).toEqual([]);
     const preToolUseHooks = config?.["hooks.PreToolUse"] as
       | Array<{ hooks?: Array<{ command?: string; timeout?: number; type?: string }> }>
       | undefined;
@@ -580,8 +588,7 @@ describe("runCodexAppServerSideQuestion", () => {
     expect(preToolUseState?.enabled).toBe(true);
     expect(preToolUseState?.trusted_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
     const permissionRequestState = codexHookStateForEvent(hookState, "permission_request");
-    expect(permissionRequestState).toMatchObject({ enabled: true });
-    expect(permissionRequestState?.trusted_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(permissionRequestState).toEqual({ enabled: false });
     const turnStartCall = client.request.mock.calls.find(([method]) => method === "turn/start");
     expect(turnStartCall?.[1]).not.toHaveProperty("config");
     expect(relayIdDuringFork).toBeDefined();
@@ -663,6 +670,7 @@ describe("runCodexAppServerSideQuestion", () => {
       },
       threadId: "side-thread",
       turnId: "turn-1",
+      autoApprove: false,
       paramsForRun: {
         messageChannel: "discord",
         messageProvider: "discord-voice",

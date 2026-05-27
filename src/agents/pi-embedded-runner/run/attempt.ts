@@ -14,12 +14,17 @@ import {
 } from "../../../config/sessions/store.js";
 import { hasSqliteSessionTranscriptEvents } from "../../../config/sessions/transcript-store.sqlite.js";
 import {
+  bindOwnedSessionTranscriptWrites,
+  withOwnedSessionTranscriptWrites,
+} from "../../../config/sessions/transcript-write-context.js";
+import {
   assertContextEngineHostSupport,
   PI_EMBEDDED_CONTEXT_ENGINE_HOST,
 } from "../../../context-engine/host-compat.js";
 import { resolveContextEngineOwnerPluginId } from "../../../context-engine/registry.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
+import { resolveDiagnosticModelContentCapturePolicy } from "../../../infra/diagnostic-llm-content.js";
 import {
   createChildDiagnosticTraceContext,
   createDiagnosticTraceContextFromActiveScope,
@@ -101,6 +106,7 @@ import { createSqliteToolArtifactStore } from "../../filesystem/tool-artifact-st
 import { resolveHeartbeatPromptForSystemPrompt } from "../../heartbeat-system-prompt.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
 import { stripHistoricalRuntimeContextCustomMessages } from "../../internal-runtime-context.js";
+import { filterLocalModelLeanTools } from "../../local-model-lean.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { resolveDefaultModelForAgent } from "../../model-selection.js";
 import { supportsModelTools } from "../../model-tool-support.js";
@@ -121,6 +127,7 @@ import {
 } from "../../pi-embedded-helpers.js";
 import { countActiveToolExecutions } from "../../pi-embedded-subscribe.handlers.tools.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
+import { isCoreToolResultMediaTrustedName } from "../../pi-embedded-subscribe.tools.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
 import {
   applyPiAutoCompactionGuard,
@@ -326,6 +333,13 @@ import {
   shouldInjectHeartbeatPrompt,
 } from "./attempt.prompt-helpers.js";
 import {
+  EmbeddedAttemptSessionTakeoverError,
+  createEmbeddedAttemptSessionLockController,
+  installPromptSubmissionLockRelease,
+  installSessionExternalHookWriteLock,
+  installSessionEventWriteLock,
+} from "./attempt.session-lock.js";
+import {
   createYieldAbortedResponse,
   persistSessionsYieldContextMessage,
   queueSessionsYieldInterruptMessage,
@@ -426,6 +440,35 @@ export {
   resolveEmbeddedAgentBaseStreamFn,
   resolveEmbeddedAgentStreamFn,
 };
+
+function collectTrustedPluginLocalMediaToolNames(params: {
+  tools: Array<{ name?: string }>;
+}): Set<string> {
+  const trusted = new Set<string>();
+  for (const tool of params.tools) {
+    const toolName = tool.name?.trim();
+    if (!toolName) {
+      continue;
+    }
+    const meta = getPluginToolMeta(tool as Parameters<typeof getPluginToolMeta>[0]);
+    if (meta?.trustedLocalMedia === true) {
+      trusted.add(toolName);
+    }
+  }
+  return trusted;
+}
+
+function collectTrustedLocalMediaToolNames(params: {
+  coreBuiltinToolNames: ReadonlySet<string>;
+  trustedPluginToolNames: ReadonlySet<string>;
+}): Set<string> {
+  return new Set([
+    ...[...params.coreBuiltinToolNames].filter((toolName) =>
+      isCoreToolResultMediaTrustedName(toolName),
+    ),
+    ...params.trustedPluginToolNames,
+  ]);
+}
 
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
 const TOOL_SEARCH_CONTROL_ALLOWLIST_NAMES = [
@@ -1004,6 +1047,28 @@ export function shouldRunLlmOutputHooksForAttempt(params: { promptErrorSource: s
   return params.promptErrorSource !== "hook:before_agent_run";
 }
 
+function shouldPreservePromptErrorAfterCleanupError(params: {
+  promptError: unknown;
+  cleanupError: unknown;
+}): boolean {
+  return (
+    Boolean(params.promptError) &&
+    params.cleanupError instanceof EmbeddedAttemptSessionTakeoverError
+  );
+}
+
+class EmbeddedAttemptPromptErrorWithCleanupTakeoverError extends Error {
+  readonly promptError: unknown;
+  readonly cleanupError: EmbeddedAttemptSessionTakeoverError;
+
+  constructor(params: { promptError: unknown; cleanupError: EmbeddedAttemptSessionTakeoverError }) {
+    super(formatErrorMessage(params.promptError), { cause: params.cleanupError });
+    this.name = "EmbeddedAttemptSessionTakeoverError";
+    this.promptError = params.promptError;
+    this.cleanupError = params.cleanupError;
+  }
+}
+
 function hasVisiblePendingToolMediaReply(
   reply: { mediaUrls?: string[]; audioAsVoice?: boolean } | null | undefined,
 ): boolean {
@@ -1030,14 +1095,23 @@ function removeTrailingMidTurnPrecheckAssistantError(params: {
     params.activeSession.agent.state.messages = messages.slice(0, -1);
   }
 
-  const removed = removeTailEntriesFromSqliteTranscript({
-    agentId: params.transcriptScope.agentId,
-    path: params.transcriptScope.path,
-    sessionId: params.transcriptScope.sessionId,
-    shouldRemove: (entry) =>
-      entry.type === "message" && isMidTurnPrecheckAssistantError(entry.message as never),
-    options: { maxEntries: 1 },
-  });
+  let removed = 0;
+  try {
+    removed = removeTailEntriesFromSqliteTranscript({
+      agentId: params.transcriptScope.agentId,
+      path: params.transcriptScope.path,
+      sessionId: params.transcriptScope.sessionId,
+      shouldRemove: (entry) =>
+        entry.type === "message" && isMidTurnPrecheckAssistantError(entry.message as never),
+      options: { maxEntries: 1 },
+    });
+  } catch (err) {
+    log.warn(
+      "[context-overflow-midturn-precheck] removed synthetic assistant error from active session but could not inspect persisted SQLite transcript entry: " +
+        formatErrorMessage(err),
+    );
+    return;
+  }
   if (
     removed === 0 &&
     isMidTurnPrecheckAssistantError(params.activeSession.agent.state.messages.at(-1))
@@ -1155,6 +1229,21 @@ function createRunArtifactStoreBestEffort(params: {
   }
 }
 
+function createAttemptAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  const error = new Error(typeof signal.reason === "string" ? signal.reason : "agent run aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAttemptAbortSignalFired(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw createAttemptAbortError(signal);
+  }
+}
+
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
@@ -1166,6 +1255,7 @@ export async function runEmbeddedAttempt(
     `embedded run start: runId=${params.runId} sessionId=${params.sessionId} provider=${params.provider} model=${params.modelId} thinking=${params.thinkLevel} messageChannel=${params.messageChannel ?? params.messageProvider ?? "unknown"}`,
   );
   const prepStages = createEmbeddedRunStageTracker();
+  throwIfAttemptAbortSignalFired(params.abortSignal);
   const emitPrepStageSummary = (phase: string) => {
     const summary = prepStages.snapshot();
     const shouldWarn = shouldWarnEmbeddedRunStageSummary(summary);
@@ -1255,6 +1345,110 @@ export async function runEmbeddedAttempt(
     | undefined;
   let beforeAgentRunBlocked = false;
   let beforeAgentRunBlockedBy: string | undefined;
+  // Releases the eager session lock if post-prompt code exits before cleanup.
+  let releaseRetainedSessionLock: (() => Promise<void>) | undefined;
+  let bundleMcpRuntime: Awaited<ReturnType<typeof materializeBundleMcpToolsForRun>> | undefined;
+  let bundleLspRuntime: Awaited<ReturnType<typeof createBundleLspToolRuntime>> | undefined;
+  let toolSearchCatalogRef: ToolSearchCatalogRef | undefined;
+  let toolSearchCatalogApplied = false;
+  let sessionCleanupOwnsEmbeddedResources = false;
+  let abortActiveSessionForExternalSignal: (() => Promise<void>) | undefined;
+  let abortRunForExternalSignal: ((isTimeout?: boolean, reason?: unknown) => void) | undefined;
+  let isCompactionPendingForExternalSignal: (() => boolean) | undefined;
+  let isCompactionInFlightForExternalSignal: (() => boolean) | undefined;
+  let removeExternalAbortSignalListener: (() => void) | undefined;
+  const getAbortReason = (signal: AbortSignal): unknown =>
+    "reason" in signal ? (signal as { reason?: unknown }).reason : undefined;
+  const makeTimeoutAbortReason = (): Error => {
+    const err = new Error("request timed out");
+    err.name = "TimeoutError";
+    return err;
+  };
+  const cleanupEmbeddedPrepResourcesAfterEarlyExit = async () => {
+    if (toolSearchCatalogApplied) {
+      clearToolSearchCatalog({
+        sessionId: params.sessionId,
+        sessionKey: sandboxSessionKey,
+        agentId: sessionAgentId,
+        runId: params.runId,
+        catalogRef: toolSearchCatalogRef,
+      });
+      toolSearchCatalogApplied = false;
+    }
+    try {
+      await bundleMcpRuntime?.dispose();
+    } catch {
+      /* best-effort */
+    } finally {
+      bundleMcpRuntime = undefined;
+    }
+    try {
+      await bundleLspRuntime?.dispose();
+    } catch {
+      /* best-effort */
+    } finally {
+      bundleLspRuntime = undefined;
+    }
+  };
+  const onExternalAbortSignal = () => {
+    const signal = params.abortSignal;
+    if (!signal) {
+      return;
+    }
+    externalAbort = true;
+    const reason = getAbortReason(signal);
+    const timeout = reason ? isTimeoutError(reason) : false;
+    if (
+      shouldFlagCompactionTimeout({
+        isTimeout: timeout,
+        isCompactionPendingOrRetrying: isCompactionPendingForExternalSignal?.() ?? false,
+        isCompactionInFlight: isCompactionInFlightForExternalSignal?.() ?? false,
+      })
+    ) {
+      timedOutDuringCompaction = true;
+    }
+    if (abortRunForExternalSignal) {
+      abortRunForExternalSignal(timeout, reason);
+      return;
+    }
+    aborted = true;
+    if (timeout) {
+      timedOut = true;
+      if (!timedOutDuringCompaction && countActiveToolExecutions(params.runId) > 0) {
+        timedOutDuringToolExecution = true;
+      }
+    }
+    promptError = createAttemptAbortError(signal);
+    if (!runAbortController.signal.aborted) {
+      runAbortController.abort(timeout ? (reason ?? makeTimeoutAbortReason()) : reason);
+    }
+    void abortActiveSessionForExternalSignal?.();
+  };
+  const armExternalAbortSignal = () => {
+    const signal = params.abortSignal;
+    if (!signal || removeExternalAbortSignalListener) {
+      return;
+    }
+    if (signal.aborted) {
+      onExternalAbortSignal();
+      return;
+    }
+    signal.addEventListener("abort", onExternalAbortSignal, { once: true });
+    removeExternalAbortSignalListener = () => {
+      signal.removeEventListener("abort", onExternalAbortSignal);
+      removeExternalAbortSignalListener = undefined;
+    };
+  };
+  const throwIfAttemptAbortSignalFiredAfterPrepCleanup = async () => {
+    if (params.abortSignal?.aborted === true) {
+      const abortError = createAttemptAbortError(params.abortSignal);
+      aborted = true;
+      externalAbort = true;
+      promptError = abortError;
+      await cleanupEmbeddedPrepResourcesAfterEarlyExit();
+      throw abortError;
+    }
+  };
   try {
     const skillsSnapshotForRun =
       sandbox?.enabled && sandbox.workspaceAccess !== "rw" ? undefined : params.skillsSnapshot;
@@ -1382,7 +1576,7 @@ export async function runEmbeddedAttempt(
       toolSearchControlsEnabledForRun ||
       codeModeControlsEnabledForRun;
     let toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor | undefined;
-    const toolSearchCatalogRef: ToolSearchCatalogRef | undefined =
+    toolSearchCatalogRef =
       toolSearchControlsEnabledForRun || codeModeControlsEnabledForRun
         ? createToolSearchCatalogRef()
         : undefined;
@@ -1641,6 +1835,11 @@ export async function runEmbeddedAttempt(
       modelApi: params.model.api,
       model: params.model,
     };
+    const pluginMetadataSnapshot = getCurrentPluginMetadataSnapshot({
+      config: params.config,
+      env: process.env,
+      workspaceDir: effectiveWorkspace,
+    });
     const tools = normalizeAgentRuntimeTools({
       runtimePlan: params.runtimePlan,
       tools: toolsEnabled ? toolsRaw : [],
@@ -1666,7 +1865,7 @@ export async function runEmbeddedAttempt(
           cfg: params.config,
         })
       : undefined;
-    const bundleMcpRuntime = bundleMcpSessionRuntime
+    bundleMcpRuntime = bundleMcpSessionRuntime
       ? await materializeBundleMcpToolsForRun({
           runtime: bundleMcpSessionRuntime,
           reservedToolNames: [
@@ -1680,7 +1879,7 @@ export async function runEmbeddedAttempt(
       disableTools: params.disableTools || isRawModelRun,
       toolsAllow: params.toolsAllow,
     });
-    const bundleLspRuntime = bundleLspEnabled
+    bundleLspRuntime = bundleLspEnabled
       ? await createBundleLspToolRuntime({
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
@@ -1713,7 +1912,28 @@ export async function runEmbeddedAttempt(
       ownerOnlyToolAllowlist: params.ownerOnlyToolAllowlist,
       warn: (message) => log.warn(message),
     });
-    const uncompactedEffectiveTools = [...tools, ...filteredBundledTools];
+    const trustedPluginLocalMediaToolNames = collectTrustedPluginLocalMediaToolNames({
+      tools: toolsEnabled ? [...toolsRaw, ...filteredBundledTools] : [],
+    });
+    const normalizedBundledTools =
+      filteredBundledTools.length > 0
+        ? normalizeAgentRuntimeTools({
+            runtimePlan: params.runtimePlan,
+            tools: filteredBundledTools,
+            provider: params.provider,
+            config: params.config,
+            workspaceDir: effectiveWorkspace,
+            env: process.env,
+            modelId: params.modelId,
+            modelApi: params.model.api,
+            model: params.model,
+          })
+        : filteredBundledTools;
+    const uncompactedEffectiveTools = filterLocalModelLeanTools({
+      tools: [...tools, ...normalizedBundledTools],
+      config: params.config,
+      agentId: sessionAgentId,
+    });
     let effectiveTools = uncompactedEffectiveTools;
     const catalogToolHookContext = {
       agentId: sessionAgentId,
@@ -1769,7 +1989,12 @@ export async function runEmbeddedAttempt(
           catalogRef: toolSearchCatalogRef,
           toolHookContext: catalogToolHookContext,
         });
-    effectiveTools = toolSearch.tools;
+    toolSearchCatalogApplied = true;
+    effectiveTools = filterLocalModelLeanTools({
+      tools: toolSearch.tools,
+      config: params.config,
+      agentId: sessionAgentId,
+    });
     if (toolSearch.compacted) {
       prepStages.mark(codeModeControlsEnabledForRun ? "code-mode" : "tool-search");
       log.info(
@@ -2056,12 +2281,31 @@ export async function runEmbeddedAttempt(
     let systemPromptText = systemPromptOverride();
     prepStages.mark("system-prompt");
 
+    const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
+    const sessionWriteLockOptions = resolveEmbeddedAttemptSessionWriteLockOptions({
+      config: params.config,
+      compactionTimeoutMs,
+    });
+    await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
+    const sessionLockController = await createEmbeddedAttemptSessionLockController({
+      lockOptions: {
+        sessionFile: params.sessionFile,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        ...sessionWriteLockOptions,
+      },
+    });
+    releaseRetainedSessionLock = () => sessionLockController.dispose();
+    armExternalAbortSignal();
+    await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
+
     let sessionManager: ReturnType<typeof guardSessionManager> | undefined;
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
     let removeToolResultContextGuard: (() => void) | undefined;
     let trajectoryRecorder: ReturnType<typeof createTrajectoryRuntimeRecorder> | null = null;
     let trajectoryEndRecorded = false;
     let buildAbortSettlePromise: () => Promise<void> | null = () => null;
+    sessionCleanupOwnsEmbeddedResources = true;
     try {
       await repairTranscriptSessionStateIfNeeded({
         agentId: sessionAgentId,
@@ -2069,10 +2313,12 @@ export async function runEmbeddedAttempt(
         debug: (message) => log.debug(message),
         warn: (message) => log.warn(message),
       });
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
       const hadTranscriptEvents = hasSqliteSessionTranscriptEvents({
         agentId: sessionAgentId,
         sessionId: params.sessionId,
       });
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
 
       const transcriptPolicy = resolveAttemptTranscriptPolicy({
         runtimePlan: params.runtimePlan,
@@ -2108,8 +2354,15 @@ export async function runEmbeddedAttempt(
           suppressNextUserMessagePersistence: params.suppressNextUserMessagePersistence,
           suppressTranscriptOnlyAssistantPersistence:
             params.suppressTranscriptOnlyAssistantPersistence,
+          suppressAssistantErrorPersistence: params.suppressAssistantErrorPersistence,
+          onMessagePersisted: () => {
+            sessionLockController.refreshAfterOwnedSessionWrite();
+          },
           onUserMessagePersisted: (message) => {
             params.onUserMessagePersisted?.(message);
+          },
+          onAssistantErrorMessagePersisted: (message) => {
+            params.onAssistantErrorMessagePersisted?.(message);
           },
         },
       );
@@ -2119,6 +2372,7 @@ export async function runEmbeddedAttempt(
           `SQLite transcript manager did not expose a runtime transcript scope: agentId=${sessionAgentId} sessionId=${params.sessionId}`,
         );
       }
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
       await runAttemptContextEngineBootstrap({
         hadTranscript: hadTranscriptEvents,
         contextEngine: activeContextEngine,
@@ -2147,16 +2401,13 @@ export async function runEmbeddedAttempt(
           }),
         warn: (message) => log.warn(message),
       });
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
 
       const settingsManager = createPreparedEmbeddedPiSettingsManager({
         cwd: effectiveWorkspace,
         agentDir,
         cfg: params.config,
-        pluginMetadataSnapshot: getCurrentPluginMetadataSnapshot({
-          config: params.config,
-          env: process.env,
-          workspaceDir: effectiveWorkspace,
-        }),
+        pluginMetadataSnapshot,
         contextTokenBudget: params.contextTokenBudget,
       });
       const piAutoCompactionGuardArgs = {
@@ -2188,6 +2439,7 @@ export async function runEmbeddedAttempt(
         extensionFactories,
       });
       await resourceLoader.reload();
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
       // DefaultResourceLoader.reload() rehydrates settings from disk and can drop OpenClaw
       // compaction overrides applied in createPreparedEmbeddedPiSettingsManager — same
       // rehydration also restores Pi's auto-compaction (openclaw#75799), so re-apply
@@ -2235,10 +2487,8 @@ export async function runEmbeddedAttempt(
         cfg: params.config,
         agentId: sessionAgentId,
       });
-      // Exact raw names of every tool registered for this run, including
-      // bundled/plugin tools. Used as the raw-name set for the trusted local
-      // MEDIA: passthrough gate: a normalized alias is not sufficient — the
-      // emitted tool name must match an exact registration of this run.
+      // Exact raw names of every tool registered for this run. This remains
+      // available for diagnostics; local MEDIA: trust is narrower below.
       const builtinToolNames = new Set(
         uncompactedEffectiveTools.flatMap((tool) => {
           const name = (tool.name ?? "").trim();
@@ -2253,6 +2503,10 @@ export async function runEmbeddedAttempt(
       const coreBuiltinToolNames = collectCoreBuiltinToolNames(uncompactedEffectiveTools, {
         isPluginTool: (tool) =>
           Boolean(getPluginToolMeta(tool as Parameters<typeof getPluginToolMeta>[0])),
+      });
+      const trustedLocalMediaToolNames = collectTrustedLocalMediaToolNames({
+        coreBuiltinToolNames,
+        trustedPluginToolNames: trustedPluginLocalMediaToolNames,
       });
       const clientToolNameConflicts = findClientToolNameConflicts({
         tools: clientTools ?? [],
@@ -2359,12 +2613,21 @@ export async function runEmbeddedAttempt(
         },
       });
       session = createdSession.session;
-      applySystemPromptOverrideToSession(session, systemPromptText);
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
       if (!session) {
         throw new Error("Embedded agent session missing");
       }
+      applySystemPromptOverrideToSession(session, systemPromptText);
       session.setActiveToolsByName(sessionToolAllowlist);
       const activeSession = session;
+      installSessionEventWriteLock({
+        session: activeSession,
+        withSessionWriteLock: (operation) => sessionLockController.withSessionWriteLock(operation),
+      });
+      installSessionExternalHookWriteLock({
+        session: activeSession,
+        withSessionWriteLock: (operation) => sessionLockController.withSessionWriteLock(operation),
+      });
       prepStages.mark("agent-session");
       if (isRawModelRun) {
         // Raw model probes should measure exactly the requested prompt against
@@ -2407,6 +2670,10 @@ export async function runEmbeddedAttempt(
         trackSettlePromise(inFlightAbortSettlePromises, promise);
       const abortActiveSession = (): Promise<void> =>
         trackAbortSettlePromise(Promise.resolve(activeSession.abort()));
+      abortActiveSessionForExternalSignal = abortActiveSession;
+      if (runAbortController.signal.aborted) {
+        void abortActiveSession();
+      }
       buildAbortSettlePromise = (): Promise<void> | null => {
         const promises = [...inFlightPromptSettlePromises, ...inFlightAbortSettlePromises];
         if (promises.length === 0) {
@@ -2414,6 +2681,7 @@ export async function runEmbeddedAttempt(
         }
         return Promise.allSettled(promises).then(() => undefined);
       };
+      let heartbeatResponseTerminated = false;
       abortSessionForYield = () => {
         yieldAbortSettled = abortActiveSession();
       };
@@ -2929,6 +3197,7 @@ export async function runEmbeddedAttempt(
             ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
             : {}),
           trace: runTrace,
+          contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
           nextCallId: () => `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`,
           onStarted: () => {
             params.onExecutionPhase?.({
@@ -3122,13 +3391,6 @@ export async function runEmbeddedAttempt(
       }
 
       let yieldAborted = false;
-      const getAbortReason = (signal: AbortSignal): unknown =>
-        "reason" in signal ? (signal as { reason?: unknown }).reason : undefined;
-      const makeTimeoutAbortReason = (): Error => {
-        const err = new Error("request timed out");
-        err.name = "TimeoutError";
-        return err;
-      };
       const abortCompaction = () => {
         if (!activeSession.isCompacting) {
           return;
@@ -3159,17 +3421,37 @@ export async function runEmbeddedAttempt(
         abortCompaction();
         void abortActiveSession();
       };
+      abortRunForExternalSignal = abortRun;
       idleTimeoutTrigger = (error) => {
         idleTimedOut = true;
         abortRun(true, error);
       };
       const abortable = <T>(promise: Promise<T>): Promise<T> =>
         abortableWithSignal(runAbortController.signal, promise);
+      const ownedTranscriptWriteContext = {
+        sessionFile: params.sessionFile,
+        sessionKey: params.sessionKey,
+        withSessionWriteLock: <T>(
+          operation: () => Promise<T> | T,
+          options?: { publishOwnedWrite?: boolean },
+        ) => sessionLockController.withSessionWriteLock(operation, options),
+      };
       const promptActiveSession = (
         prompt: string,
         options?: Parameters<typeof activeSession.prompt>[1],
       ): Promise<void> =>
-        abortable(trackPromptSettlePromise(activeSession.prompt(prompt, options)));
+        withOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, async () => {
+          if (runAbortController.signal.aborted) {
+            throw createAttemptAbortError(runAbortController.signal);
+          }
+          return await abortable(trackPromptSettlePromise(activeSession.prompt(prompt, options)));
+        });
+      const onBlockReply = params.onBlockReply
+        ? bindOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, params.onBlockReply)
+        : undefined;
+      const onBlockReplyFlush = params.onBlockReplyFlush
+        ? bindOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, params.onBlockReplyFlush)
+        : undefined;
 
       const subscription = subscribeEmbeddedPiSession(
         buildEmbeddedSubscriptionParams({
@@ -3183,17 +3465,29 @@ export async function runEmbeddedAttempt(
           toolResultFormat: params.toolResultFormat,
           shouldEmitToolResult: params.shouldEmitToolResult,
           shouldEmitToolOutput: params.shouldEmitToolOutput,
+          sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
           onToolResult: params.onToolResult,
           onReasoningStream: params.onReasoningStream,
           onReasoningEnd: params.onReasoningEnd,
-          onBlockReply: params.onBlockReply,
-          onBlockReplyFlush: params.onBlockReplyFlush,
+          onBlockReply,
+          onBlockReplyFlush,
           blockReplyBreak: params.blockReplyBreak,
           blockReplyChunking: params.blockReplyChunking,
           onPartialReply: params.onPartialReply,
           onAssistantMessageStart: params.onAssistantMessageStart,
           onExecutionPhase: params.onExecutionPhase,
           onAgentEvent: params.onAgentEvent,
+          onHeartbeatToolResponse:
+            params.trigger === "heartbeat"
+              ? () => {
+                  if (heartbeatResponseTerminated) {
+                    return;
+                  }
+                  heartbeatResponseTerminated = true;
+                  void abortActiveSession();
+                }
+              : undefined,
+          terminalLifecyclePhase: params.deferTerminalLifecycleEnd ? "finishing" : "end",
           onBeforeLifecycleTerminal: () => {
             // Clear embedded-run activity before emitting terminal lifecycle events so
             // post-completion cleanup does not observe a logically finished run as active.
@@ -3206,6 +3500,7 @@ export async function runEmbeddedAttempt(
           sessionId: params.sessionId,
           agentId: sessionAgentId,
           builtinToolNames,
+          trustedLocalMediaToolNames,
           internalEvents: params.internalEvents,
         }),
       );
@@ -3235,6 +3530,8 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
         getLastCompactionTokensAfter,
       } = subscription;
+      isCompactionPendingForExternalSignal = () => subscription.isCompacting();
+      isCompactionInFlightForExternalSignal = () => activeSession.isCompacting;
       toolSearchCatalogExecutor = async (toolParams) => {
         try {
           const result = await runToolLifecycle({
@@ -3370,29 +3667,10 @@ export async function runEmbeddedAttempt(
 
       let messagesSnapshot: AgentMessage[] = [];
       let sessionIdUsed = activeSession.sessionId;
-      const onAbort = () => {
-        externalAbort = true;
-        const reason = params.abortSignal ? getAbortReason(params.abortSignal) : undefined;
-        const timeout = reason ? isTimeoutError(reason) : false;
-        if (
-          shouldFlagCompactionTimeout({
-            isTimeout: timeout,
-            isCompactionPendingOrRetrying: subscription.isCompacting(),
-            isCompactionInFlight: activeSession.isCompacting,
-          })
-        ) {
-          timedOutDuringCompaction = true;
-        }
-        abortRun(timeout, reason);
-      };
-      if (params.abortSignal) {
-        if (params.abortSignal.aborted) {
-          onAbort();
-        } else {
-          params.abortSignal.addEventListener("abort", onAbort, {
-            once: true,
-          });
-        }
+      let sessionFileUsed: string | undefined = params.sessionFile;
+      if (params.abortSignal?.aborted === true) {
+        onExternalAbortSignal();
+        await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
       }
 
       // Hook runner was already obtained earlier before tool creation
@@ -3784,7 +4062,14 @@ export async function runEmbeddedAttempt(
               model: params.model,
               modelId: params.modelId,
               provider: params.provider,
-              sessionManager,
+              sessionManager: {
+                appendCustomEntry: async (customType, data) => {
+                  await sessionLockController.withSessionWriteLock(() => {
+                    activeSessionManager.appendCustomEntry(customType, data);
+                  });
+                },
+                getEntries: () => activeSessionManager.getEntries(),
+              },
               signal: runAbortController.signal,
               streamFn: activeSession.agent.streamFn,
               systemPrompt: systemPromptText,
@@ -3792,6 +4077,16 @@ export async function runEmbeddedAttempt(
             if (googlePromptCacheStreamFn) {
               activeSession.agent.streamFn = googlePromptCacheStreamFn;
             }
+            installPromptSubmissionLockRelease({
+              session: activeSession,
+              waitForSessionEvents: (sessionToDrain) =>
+                sessionLockController.waitForSessionEvents(sessionToDrain),
+              releaseForPrompt: () => sessionLockController.releaseForPrompt(),
+              reacquireAfterPrompt: () => sessionLockController.reacquireAfterPrompt(),
+              sessionKey: params.sessionKey,
+              sessionFile: params.sessionFile,
+              withSessionWriteLock: (run) => sessionLockController.withSessionWriteLock(run),
+            });
           }
 
           // Detect and load images referenced in the visible prompt for vision-capable models.
@@ -4092,10 +4387,16 @@ export async function runEmbeddedAttempt(
               runId: params.runId,
               sessionId: params.sessionId,
             });
-            stripSessionsYieldArtifacts(activeSession, sessionTranscriptScope);
-            if (yieldMessage) {
-              await persistSessionsYieldContextMessage(activeSession, yieldMessage);
-            }
+            await sessionLockController.waitForSessionEvents(activeSession);
+            await sessionLockController.withSessionWriteLock(async () => {
+              stripSessionsYieldArtifacts(activeSession, sessionTranscriptScope);
+              if (yieldMessage) {
+                await persistSessionsYieldContextMessage(activeSession, yieldMessage);
+              }
+            });
+          } else if (heartbeatResponseTerminated && isRunnerAbortError(err)) {
+            aborted = false;
+            await sessionLockController.waitForSessionEvents(activeSession);
           } else if (isMidTurnPrecheckSignal(err)) {
             await handleMidTurnPrecheckRequest(err.request);
           } else {
@@ -4160,6 +4461,11 @@ export async function runEmbeddedAttempt(
                   `proceeding with pre-compaction state runId=${params.runId} sessionId=${params.sessionId}`,
               );
             }
+          } else if (onBlockReplyFlush) {
+            // Retry-generated blocks can still be draining when the compaction
+            // retry wait resolves; this second drain is idempotent when no new
+            // blocks were produced.
+            await onBlockReplyFlush();
           }
         } catch (err) {
           if (isRunnerAbortError(err)) {
@@ -4438,7 +4744,6 @@ export async function runEmbeddedAttempt(
           params.replyOperation.detachBackend(queueHandle);
         }
         clearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
-        params.abortSignal?.removeEventListener?.("abort", onAbort);
       }
 
       const toolMetasNormalized = toolMetas
@@ -4804,6 +5109,7 @@ export async function runEmbeddedAttempt(
           timedOut ||
           idleTimedOut ||
           timedOutDuringCompaction;
+        const cleanupSessionLock = await sessionLockController.acquireForCleanup({ session });
         await cleanupEmbeddedAttemptResources({
           removeToolResultContextGuard,
           flushPendingToolResultsAfterIdle,
@@ -4811,16 +5117,27 @@ export async function runEmbeddedAttempt(
           sessionManager,
           bundleMcpRuntime,
           bundleLspRuntime,
+          sessionLock: cleanupSessionLock,
           aborted: cleanupAborted,
           abortSettlePromise: cleanupAborted ? buildAbortSettlePromise() : null,
+          skipSessionFlush: sessionLockController.hasSessionTakeover(),
           runId: params.runId,
           sessionId: params.sessionId,
         });
       } catch (err) {
         cleanupError = err;
       }
+      const synthesizedCleanupTakeoverError =
+        !cleanupError && promptError && sessionLockController.hasSessionTakeover()
+          ? new EmbeddedAttemptSessionTakeoverError(params.sessionFile ?? params.sessionId)
+          : undefined;
+      const cleanupFailure = cleanupError ?? synthesizedCleanupTakeoverError;
+      const shouldPreservePromptError = shouldPreservePromptErrorAfterCleanupError({
+        promptError,
+        cleanupError: cleanupFailure,
+      });
       emitDiagnosticRunCompleted?.(
-        cleanupError
+        cleanupFailure
           ? "error"
           : beforeAgentRunBlocked
             ? "blocked"
@@ -4829,16 +5146,47 @@ export async function runEmbeddedAttempt(
               : aborted || timedOut || idleTimedOut || timedOutDuringCompaction
                 ? "aborted"
                 : "completed",
-        cleanupError ?? promptError,
+        shouldPreservePromptError ? promptError : (cleanupFailure ?? promptError),
         beforeAgentRunBlocked
           ? { blockedBy: beforeAgentRunBlockedBy ?? "before_agent_run" }
           : undefined,
       );
-      if (cleanupError) {
-        await Promise.reject(cleanupError);
+      if (cleanupFailure) {
+        if (shouldPreservePromptError) {
+          log.warn(
+            `embedded attempt cleanup detected session takeover after prompt failure; preserving prompt error: ` +
+              `runId=${params.runId} sessionId=${params.sessionId} ` +
+              `promptError=${formatErrorMessage(promptError)} cleanupError=${formatErrorMessage(cleanupFailure)}`,
+          );
+          await Promise.reject(
+            new EmbeddedAttemptPromptErrorWithCleanupTakeoverError({
+              promptError,
+              cleanupError: cleanupFailure as EmbeddedAttemptSessionTakeoverError,
+            }),
+          );
+        } else {
+          await Promise.reject(cleanupFailure);
+        }
       }
     }
   } finally {
+    removeExternalAbortSignalListener?.();
+    if (!sessionCleanupOwnsEmbeddedResources) {
+      try {
+        await cleanupEmbeddedPrepResourcesAfterEarlyExit();
+      } catch (cleanupErr) {
+        log.warn(
+          `failed to clean up embedded prep resources after early attempt exit: runId=${params.runId} ${String(cleanupErr)}`,
+        );
+      }
+    }
+    try {
+      await releaseRetainedSessionLock?.();
+    } catch (releaseErr) {
+      log.error(
+        `failed to release retained session lock on attempt teardown: runId=${params.runId} ${String(releaseErr)}`,
+      );
+    }
     emitDiagnosticRunCompleted?.(
       aborted ? "aborted" : "error",
       promptError ?? new Error("run exited before diagnostic completion"),

@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import type { CronJob } from "../types.js";
@@ -14,6 +17,23 @@ const STORE_TEST_NOW = Date.parse("2026-03-23T12:00:00.000Z");
 
 async function writeSingleJobStore(storeKey: string, job: Record<string, unknown>) {
   await saveCronStore(storeKey, { version: 1, jobs: [job as unknown as CronJob] });
+}
+
+function updateCronJobRowForTest(
+  storeKey: string,
+  jobId: string,
+  updates: Partial<OpenClawStateKyselyDatabase["cron_jobs"]>,
+): void {
+  const stateDatabase = openOpenClawStateDatabase();
+  const db = getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "cron_jobs">>(stateDatabase.db);
+  executeSqliteQuerySync(
+    stateDatabase.db,
+    db
+      .updateTable("cron_jobs")
+      .set(updates)
+      .where("store_key", "=", storeKey)
+      .where("job_id", "=", jobId),
+  );
 }
 
 function createStoreTestState(storeKey: string) {
@@ -107,6 +127,69 @@ describe("cron service store seam coverage", () => {
 
     const job = findJobOrThrow(state, "unsafe-session-target-job");
     expect(job.sessionTarget).toBe("session:../../outside");
+  });
+
+  it("preserves unsupported payload rows across full persistence without loading them", async () => {
+    const { storeKey } = await makeStoreKey();
+    const legacyJob = createReloadCronJob({
+      id: "legacy-command",
+      name: "legacy command",
+      state: { lastRunAtMs: STORE_TEST_NOW - 3_600_000 },
+    });
+
+    await saveCronStore(storeKey, {
+      version: 1,
+      jobs: [
+        createReloadCronJob({
+          id: "valid-job",
+          name: "valid job",
+          payload: { kind: "systemEvent", text: "tick" },
+        }),
+        legacyJob,
+      ],
+    });
+    updateCronJobRowForTest(storeKey, "legacy-command", {
+      payload_kind: "command",
+      payload_message: "echo daily",
+      job_json: JSON.stringify({
+        ...legacyJob,
+        payload: { kind: "command", command: "echo daily" },
+        state: { lastRunAtMs: STORE_TEST_NOW - 3_600_000 },
+      }),
+    });
+
+    const state = createStoreTestState(storeKey);
+    await ensureLoaded(state, { skipRecompute: true });
+
+    expect(state.store?.jobs.map((job) => job.id)).toEqual(["valid-job"]);
+    expect(() => findJobOrThrow(state, "legacy-command")).toThrow(/unknown cron job id/);
+
+    const valid = findJobOrThrow(state, "valid-job");
+    valid.name = "valid job renamed";
+    await persist(state);
+
+    const persisted = await loadCronStore(storeKey);
+    expect(persisted.jobs.map((job) => job.id)).toEqual(["valid-job"]);
+
+    const stateDatabase = openOpenClawStateDatabase();
+    const db = getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "cron_jobs">>(
+      stateDatabase.db,
+    );
+    const rows = executeSqliteQuerySync(
+      stateDatabase.db,
+      db
+        .selectFrom("cron_jobs")
+        .select(["job_id", "payload_kind", "job_json"])
+        .where("store_key", "=", storeKey)
+        .orderBy("sort_order", "asc")
+        .orderBy("job_id", "asc"),
+    ).rows;
+    expect(rows.map((row) => row.job_id)).toEqual(["valid-job", "legacy-command"]);
+    expect(rows[1]).toMatchObject({ job_id: "legacy-command", payload_kind: "command" });
+    expect(JSON.parse(rows[1]?.job_json ?? "{}")).toMatchObject({
+      id: "legacy-command",
+      payload: { kind: "command", command: "echo daily" },
+    });
   });
 
   it("clears stale nextRunAtMs after force reload when cron schedule expression changes", async () => {

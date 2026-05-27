@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
 
 export type MemoryWikiImportRunSummary = {
@@ -88,7 +89,7 @@ function normalizeImportRunSummary(raw: unknown): MemoryWikiImportRunSummary | n
         .map((entry) => (typeof entry?.path === "string" ? entry.path.trim() : ""))
         .filter((entry): entry is string => entry.length > 0)
     : [];
-  const pagePaths = [...new Set([...createdPaths, ...updatedPaths])];
+  const pagePaths = uniqueStrings([...createdPaths, ...updatedPaths]);
   const conversationCount =
     typeof record.conversationCount === "number" && Number.isFinite(record.conversationCount)
       ? Math.max(0, Math.floor(record.conversationCount))

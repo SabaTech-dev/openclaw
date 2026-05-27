@@ -1,4 +1,7 @@
+import { asFiniteNumber } from "../../shared/number-coercion.js";
+import { isRecord } from "../../shared/record-coerce.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
+import { normalizeTrimmedStringList } from "../../shared/string-normalization.js";
 import type {
   OpenClawStateDatabase,
   OpenClawStateDatabaseOptions,
@@ -50,12 +53,8 @@ export function authProfileStateKey(
   return resolveAuthProfileStoreKey(agentDir, env);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
 function normalizeFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return asFiniteNumber(value);
 }
 
 function normalizeEnumValue<T extends string>(value: unknown, allowed: Set<T>): T | undefined {
@@ -95,7 +94,7 @@ function normalizeAuthProfileOrder(raw: unknown): AuthProfileState["order"] {
       if (!providerKey) {
         return acc;
       }
-      const list = value.map((entry) => normalizeOptionalString(entry) ?? "").filter(Boolean);
+      const list = normalizeTrimmedStringList(value);
       if (list.length > 0) {
         acc[providerKey] = list;
       }

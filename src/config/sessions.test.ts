@@ -305,6 +305,38 @@ describe("sessions", () => {
     expect(store[mainSessionKey]?.lastThreadId).toBeUndefined();
   });
 
+  it("updateLastRoute derives delivery context from channel routes", async () => {
+    const mainSessionKey = "agent:main:main";
+    await createSessionStoreFixture({
+      prefix: "updateLastRoute-route",
+      entries: {},
+    });
+
+    await updateLastRoute({
+      agentId: "main",
+      sessionKey: mainSessionKey,
+      route: {
+        channel: "telegram",
+        accountId: "work",
+        target: { to: "thread-root", chatType: "group" },
+        thread: { id: 123, kind: "topic", source: "target" },
+      },
+    });
+
+    const store = readSessionEntries();
+    expect(store[mainSessionKey]?.lastChannel).toBe("telegram");
+    expect(store[mainSessionKey]?.lastTo).toBe("thread-root");
+    expect(store[mainSessionKey]?.lastAccountId).toBe("work");
+    expect(store[mainSessionKey]?.lastThreadId).toBe(123);
+    expect(store[mainSessionKey]?.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "thread-root",
+      accountId: "work",
+      chatType: "group",
+      threadId: 123,
+    });
+  });
+
   it("updateLastRoute records typed group metadata when ctx is provided", async () => {
     const sessionKey = "agent:main:demo-chat:group:room-123";
     await createSessionStoreFixture({
@@ -514,6 +546,67 @@ describe("sessions", () => {
 
     const store = readSessionEntries();
     expect(store["agent:main:main"]?.sessionId).toBe("sess-1");
+  });
+
+  it("preserves ACP metadata on whole-row upserts by default", async () => {
+    const sessionKey = "agent:main:main";
+    await createSessionStoreFixture({
+      prefix: "session-row-upsert-acp",
+      entries: {
+        [sessionKey]: {
+          sessionId: "sess-1",
+          updatedAt: 100,
+          acp: {
+            backend: "acpx",
+            agent: "main",
+            runtimeSessionName: "acp-session-1",
+          },
+        },
+      },
+    });
+
+    upsertSessionEntry({
+      agentId: "main",
+      sessionKey,
+      entry: { sessionId: "sess-2", updatedAt: 200 },
+    });
+
+    const store = readSessionEntries();
+    expect(store[sessionKey]?.sessionId).toBe("sess-2");
+    expect(store[sessionKey]?.acp).toEqual({
+      backend: "acpx",
+      agent: "main",
+      runtimeSessionName: "acp-session-1",
+    });
+  });
+
+  it("can explicitly drop ACP metadata on whole-row upserts", async () => {
+    const sessionKey = "agent:main:main";
+    await createSessionStoreFixture({
+      prefix: "session-row-upsert-acp-drop",
+      entries: {
+        [sessionKey]: {
+          sessionId: "sess-1",
+          updatedAt: 100,
+          acp: {
+            backend: "acpx",
+            agent: "main",
+            runtimeSessionName: "acp-session-1",
+          },
+        },
+      },
+    });
+
+    upsertSessionEntry({
+      agentId: "main",
+      sessionKey,
+      entry: { sessionId: "sess-2", updatedAt: 200 },
+      allowDropAcpMeta: true,
+    });
+
+    const store = readSessionEntries();
+    expect(store[sessionKey]?.sessionId).toBe("sess-2");
+    expect(store[sessionKey]?.acp).toBeUndefined();
   });
 
   it("normalizes last route fields on write", async () => {

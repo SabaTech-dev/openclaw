@@ -456,6 +456,7 @@ describe("diagnostics.otel.captureContent", () => {
         toolInputs: true,
         toolOutputs: true,
         systemPrompt: false,
+        toolDefinitions: true,
       },
     ]) {
       const result = OpenClawSchema.safeParse({

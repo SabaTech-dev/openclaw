@@ -350,9 +350,23 @@ export async function maybeRepairLegacyCronStore(params: {
   const hasLegacyStoreFile = legacyCronStoreFileExists(legacyStorePath);
   const hasLegacyStateSidecar = legacyCronStateFileExists(legacyStorePath);
   const hasLegacyRunLogs = await legacyCronRunLogFilesExist(legacyStorePath);
-  const store =
-    (hasLegacyStoreFile ? await loadLegacyCronStoreForMigration(legacyStorePath) : null) ??
-    (await loadCronStore(storeKey));
+  let store: Awaited<ReturnType<typeof loadCronStore>>;
+  try {
+    store =
+      (hasLegacyStoreFile ? await loadLegacyCronStoreForMigration(legacyStorePath) : null) ??
+      (await loadCronStore(storeKey));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    note(
+      [
+        `Unable to read cron job store at ${shortenHomePath(legacyStorePath)}.`,
+        `- ${reason}`,
+        `Fix the file's permissions or contents and re-run ${formatCliCommand("openclaw doctor")}; later health checks will continue.`,
+      ].join("\n"),
+      "Cron",
+    );
+    return;
+  }
   const rawJobs = (store.jobs ?? []) as unknown as Array<Record<string, unknown>>;
   if (rawJobs.length === 0 && !hasLegacyStoreFile && !hasLegacyStateSidecar && !hasLegacyRunLogs) {
     return;

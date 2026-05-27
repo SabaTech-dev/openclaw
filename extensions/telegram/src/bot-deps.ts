@@ -17,6 +17,7 @@ import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/secur
 import {
   getSessionEntry,
   listSessionEntries,
+  loadSessionStore,
   patchSessionEntry,
   readSessionUpdatedAt,
   resolveStorePath,
@@ -37,6 +38,7 @@ export type TelegramBotDeps = {
   getRuntimeConfig: typeof getRuntimeConfig;
   getSessionEntry: typeof getSessionEntry;
   resolveStorePath?: typeof resolveStorePath;
+  loadSessionStore?: typeof loadSessionStore;
   listSessionEntries: typeof listSessionEntries;
   patchSessionEntry: typeof patchSessionEntry;
   readSessionUpdatedAt?: typeof readSessionUpdatedAt;
@@ -74,6 +76,9 @@ export const defaultTelegramBotDeps: TelegramBotDeps = {
   },
   get resolveStorePath() {
     return resolveStorePath;
+  },
+  get loadSessionStore() {
+    return loadSessionStore;
   },
   get listSessionEntries() {
     return listSessionEntries;
