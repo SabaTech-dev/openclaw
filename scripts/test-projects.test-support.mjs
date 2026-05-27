@@ -1818,7 +1818,7 @@ export function buildVitestRunPlans(
     "autoReplyReply",
     "autoReplyTopLevel",
     "agentCore",
-    "agentPiEmbedded",
+    "agentEmbedded",
     "agentSupport",
     "agentTools",
     "agent",
