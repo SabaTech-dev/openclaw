@@ -15,7 +15,7 @@ import {
   expandTelegramAllowFromWithAccessGroups,
   resolveTelegramDmAllow,
 } from "./access-groups.js";
-import { mergeTelegramAccountConfig, resolveDefaultTelegramAccountId } from "./accounts.js";
+import { resolveDefaultTelegramAccountId } from "./accounts.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import {
   firstDefined,
@@ -30,6 +30,7 @@ import {
   buildTypingThreadParams,
   extractTelegramForumFlag,
   resolveTelegramForumFlag,
+  resolveTelegramBotHasTopicsEnabled,
   resolveTelegramThreadSpec,
   shouldUseTelegramDmThreadSession,
 } from "./bot/helpers.js";
@@ -106,6 +107,7 @@ export type TelegramMessageContext = {
   sendTyping: () => Promise<void>;
   sendRecordVoice: () => Promise<void>;
   sendChatActionHandler: BuildTelegramMessageContextParams["sendChatActionHandler"];
+  initialTypingCueSent?: boolean;
   ackReactionPromise: Promise<boolean> | null;
   reactionApi: TelegramReactionApi | null;
   removeAckAfterReply: boolean;
@@ -231,17 +233,17 @@ export const buildTelegramMessageContext = async ({
   const freshCfg =
     loadFreshConfig?.() ??
     (runtime?.getRuntimeConfig ?? (await loadTelegramMessageContextRuntime()).getRuntimeConfig)();
-  const telegramCfg = mergeTelegramAccountConfig(freshCfg, account.accountId);
-  let { route, configuredBinding, configuredBindingSessionKey } = resolveTelegramConversationRoute({
-    cfg: freshCfg,
-    accountId: account.accountId,
-    chatId,
-    isGroup,
-    resolvedThreadId,
-    replyThreadId,
-    senderId,
-    topicAgentId: topicConfig?.agentId,
-  });
+  let { route, configuredBinding, configuredBindingSessionKey, pluginOwnedRuntimeBinding } =
+    resolveTelegramConversationRoute({
+      cfg: freshCfg,
+      accountId: account.accountId,
+      chatId,
+      isGroup,
+      resolvedThreadId,
+      replyThreadId,
+      senderId,
+      topicAgentId: topicConfig?.agentId,
+    });
   const requiresExplicitAccountBinding = (
     candidate: ReturnType<typeof resolveTelegramConversationRoute>["route"],
   ): boolean =>
@@ -359,6 +361,7 @@ export const buildTelegramMessageContext = async ({
   ) {
     return null;
   }
+  let initialTypingCueSent = false;
   const ensureConfiguredBindingReady = async (): Promise<boolean> => {
     if (!configuredBinding) {
       return true;
@@ -397,9 +400,7 @@ export const buildTelegramMessageContext = async ({
   });
   const useDmThreadSession = shouldUseTelegramDmThreadSession({
     dmThreadId,
-    accountConfig: telegramCfg,
-    directConfig,
-    topicConfig,
+    botHasTopicsEnabled: resolveTelegramBotHasTopicsEnabled(primaryCtx.me),
   });
   const threadKeys =
     useDmThreadSession && dmThreadId != null
@@ -421,12 +422,15 @@ export const buildTelegramMessageContext = async ({
     agentId: route.agentId,
   });
   const baseRequireMention = resolveGroupRequireMention(chatId);
-  const requireMention = firstDefined(
-    topicConfig?.requireMention,
-    activationOverride,
-    telegramGroupConfig?.requireMention,
-    baseRequireMention,
-  );
+  const requireMention =
+    isGroup && pluginOwnedRuntimeBinding
+      ? false
+      : firstDefined(
+          topicConfig?.requireMention,
+          activationOverride,
+          telegramGroupConfig?.requireMention,
+          baseRequireMention,
+        );
 
   const recordChannelActivity =
     runtime?.recordChannelActivity ??
@@ -469,6 +473,15 @@ export const buildTelegramMessageContext = async ({
 
   if (!(await ensureConfiguredBindingReady())) {
     return null;
+  }
+
+  // Direct chats are now reply-eligible; send the first typing cue before
+  // expensive context/session construction without showing typing for dropped turns.
+  if (!isGroup) {
+    initialTypingCueSent = true;
+    void sendTyping().catch((err) => {
+      logVerbose(`telegram early direct typing cue failed for chat ${chatId}: ${String(err)}`);
+    });
   }
 
   const { ctxPayload, skillFilter, turn } = await buildTelegramInboundContextPayload({
@@ -634,6 +647,7 @@ export const buildTelegramMessageContext = async ({
     sendTyping,
     sendRecordVoice,
     sendChatActionHandler,
+    initialTypingCueSent,
     ackReactionPromise,
     reactionApi,
     removeAckAfterReply,

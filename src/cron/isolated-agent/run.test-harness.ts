@@ -237,7 +237,8 @@ vi.mock("../../config/sessions.js", () => sessionStoreRuntimeMock);
 
 vi.mock("../../config/sessions/store.runtime.js", () => sessionStoreRuntimeMock);
 
-vi.mock("../delivery-plan.js", () => ({
+vi.mock("../delivery-plan.js", async () => ({
+  ...(await vi.importActual<typeof import("../delivery-plan.js")>("../delivery-plan.js")),
   resolveCronDeliveryPlan: resolveCronDeliveryPlanMock,
 }));
 

@@ -2328,6 +2328,8 @@ export async function runEmbeddedAttempt(
         config: params.config,
         env: process.env,
       });
+      const preparedUserTurnMessage = await params.userTurnTranscriptRecorder?.resolveMessage();
+      await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
 
       sessionManager = guardSessionManager(
         openTranscriptSessionManagerForSession({
@@ -2338,11 +2340,11 @@ export async function runEmbeddedAttempt(
         }),
         {
           agentId: sessionAgentId,
-          sessionId: params.sessionId,
           sessionKey: params.sessionKey,
           config: params.config,
           contextWindowTokens: params.contextTokenBudget,
           inputProvenance: params.inputProvenance,
+          preparedUserTurnMessage,
           allowSyntheticToolResults: transcriptPolicy.allowSyntheticToolResults,
           missingToolResultText:
             params.model.api === "openai-responses" ||
@@ -4387,6 +4389,7 @@ export async function runEmbeddedAttempt(
               runId: params.runId,
               sessionId: params.sessionId,
             });
+            await sessionLockController.releaseHeldLockForAbort();
             await sessionLockController.waitForSessionEvents(activeSession);
             await sessionLockController.withSessionWriteLock(async () => {
               stripSessionsYieldArtifacts(activeSession, sessionTranscriptScope);

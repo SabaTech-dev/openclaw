@@ -33,6 +33,7 @@ export type {
 export { PluginStateStoreError } from "./plugin-state-store.types.js";
 export {
   closePluginStateDatabase,
+  closePluginStateDatabase as closePluginStateSqliteStore,
   isPluginStateDatabaseOpen,
   probePluginStateStore,
   sweepExpiredPluginStateEntries,

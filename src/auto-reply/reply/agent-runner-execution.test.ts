@@ -3,6 +3,10 @@ import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-erro
 import type { SessionEntry } from "../../config/sessions.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
+import {
+  createUserTurnTranscriptRecorder,
+  type PersistedUserTurnMessage,
+} from "../../sessions/user-turn-transcript.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -272,6 +276,14 @@ function createFollowupRun(): FollowupRun {
       blockReplyBreak: "message_end",
     },
   } as unknown as FollowupRun;
+}
+
+function createTestUserTurnRecorder(message: PersistedUserTurnMessage) {
+  return createUserTurnTranscriptRecorder({
+    message,
+    target: { transcriptPath: "/tmp/session.jsonl" },
+    updateMode: "none",
+  });
 }
 
 function createMockReplyOperation(): {
@@ -1767,6 +1779,65 @@ describe("runAgentTurnWithFallback", () => {
       messageChannel: "telegram",
       messageProvider: "telegram",
     });
+  });
+
+  it("passes prepared CLI user turns to the runtime persistence boundary", async () => {
+    state.isCliProviderMock.mockReturnValue(true);
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("codex-cli", "gpt-5.4"),
+      provider: "codex-cli",
+      model: "gpt-5.4",
+      attempts: [],
+    }));
+    state.runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "codex-cli";
+    followupRun.run.model = "gpt-5.4";
+    const preparedUserTurnMessage = {
+      role: "user",
+      content: "describe this",
+      MediaPath: "/tmp/image.png",
+      MediaPaths: ["/tmp/image.png"],
+      MediaType: "image/png",
+      MediaTypes: ["image/png"],
+    } as never;
+    followupRun.userTurnTranscriptRecorder = createTestUserTurnRecorder(preparedUserTurnMessage);
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      sessionFile: "/tmp/session.jsonl",
+      updatedAt: 1,
+    };
+    const activeSessionStore = { main: sessionEntry };
+
+    const result = await runAgentTurnWithFallback({
+      ...createMinimalRunAgentTurnParams({ followupRun }),
+      commandBody: "runtime prompt",
+      transcriptCommandBody: "display prompt",
+      activeSessionStore,
+      storePath: "/tmp/sessions.json",
+      getActiveSessionEntry: () => activeSessionStore.main,
+    });
+
+    expect(result.kind).toBe("success");
+    expect(state.runCliAgentMock).toHaveBeenCalledOnce();
+    expectMockCallArgFields(state.runCliAgentMock, 0, "CLI runtime", {
+      sessionKey: "main",
+      agentId: "agent",
+      sessionId: "session",
+      suppressNextUserMessagePersistence: false,
+    });
+    const call = requireMockCall(state.runCliAgentMock, 0, "CLI runtime");
+    const callParams = requireRecord(call[0], "CLI runtime");
+    expect(callParams.userTurnTranscriptRecorder).toEqual(expect.any(Object));
+    expect(requireRecord(callParams.userTurnTranscriptRecorder, "user turn recorder").message).toBe(
+      preparedUserTurnMessage,
+    );
+    expect(callParams.onUserMessagePersisted).toEqual(expect.any(Function));
   });
 
   it("does not reuse or persist CLI sessions for room-event turns", async () => {

@@ -142,7 +142,7 @@ type GatewayReloadHandlerParams = {
   setState: (state: GatewayHotReloadState) => void;
   startChannel: GatewayChannelManager["startChannel"];
   stopChannel: GatewayChannelManager["stopChannel"];
-  stopPostReadySidecars?: () => void;
+  stopPostReadySidecars?: () => Promise<void> | void;
   reloadPlugins: (params: {
     nextConfig: OpenClawConfig;
     changedPaths: readonly string[];
@@ -427,7 +427,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     }
 
     if (plan.restartGmailWatcher) {
-      params.stopPostReadySidecars?.();
+      await params.stopPostReadySidecars?.();
       const restartAbortController =
         params.createGmailRestartAbortController?.() ?? new AbortController();
       try {

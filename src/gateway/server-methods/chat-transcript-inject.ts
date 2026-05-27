@@ -114,7 +114,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   try {
     const agentId = params.agentId ?? DEFAULT_AGENT_ID;
     const sessionId = params.sessionId;
-    const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
+    const appendResult = await appendSessionTranscriptMessage({
       agentId,
       ...(params.path ? { path: params.path } : {}),
       sessionId,
@@ -122,6 +122,10 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
       now,
       config: params.config,
     });
+    if (!appendResult) {
+      return { ok: false, error: "assistant message was not appended" };
+    }
+    const { messageId, message: appendedMessage } = appendResult;
     if (sessionId) {
       emitSessionTranscriptUpdate({
         agentId,

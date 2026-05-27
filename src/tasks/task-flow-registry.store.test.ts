@@ -1,28 +1,21 @@
 import { statSync } from "node:fs";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
+  createTaskFlowForTask,
   createManagedTaskFlow,
   getTaskFlowById,
   requestFlowCancel,
   resetTaskFlowRegistryForTests,
   setFlowWaiting,
 } from "./task-flow-registry.js";
-import { configureTaskFlowRegistryRuntime } from "./task-flow-registry.store.js";
-import { loadTaskFlowRegistryStateFromSqlite } from "./task-flow-registry.store.sqlite.js";
 import {
-  parseOptionalTaskFlowSyncMode,
-  parseTaskFlowStatus,
-  type TaskFlowRecord,
-} from "./task-flow-registry.types.js";
-import { parseTaskNotifyPolicy } from "./task-registry.types.js";
-
-type TaskFlowRegistryTestDatabase = Pick<OpenClawStateKyselyDatabase, "flow_runs">;
+  resolveTaskFlowRegistryDir,
+  resolveTaskFlowRegistrySqlitePath,
+} from "./task-flow-registry.paths.js";
+import { configureTaskFlowRegistryRuntime } from "./task-flow-registry.store.js";
+import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 
 function createStoredFlow(): TaskFlowRecord {
   return {
@@ -133,44 +126,6 @@ describe("task-flow-registry store runtime", () => {
     expect(restoredFlow.goal).toBe("Restored flow");
   });
 
-  it("rejects invalid persisted flow enum values", () => {
-    expect(parseOptionalTaskFlowSyncMode("managed")).toBe("managed");
-    expect(parseOptionalTaskFlowSyncMode(null)).toBeUndefined();
-    expect(parseTaskFlowStatus("waiting")).toBe("waiting");
-    expect(parseTaskNotifyPolicy("state_changes")).toBe("state_changes");
-
-    expect(() => parseOptionalTaskFlowSyncMode("legacy")).toThrow(
-      "Invalid persisted task flow sync mode",
-    );
-    expect(() => parseTaskFlowStatus("done")).toThrow("Invalid persisted task flow status");
-    expect(() => parseTaskNotifyPolicy("verbose")).toThrow("Invalid persisted task notify policy");
-  });
-
-  it("rejects corrupt persisted flow rows during sqlite restore", async () => {
-    await withFlowRegistryTempDir(async (root) => {
-      process.env.OPENCLAW_STATE_DIR = root;
-      resetTaskFlowRegistryForTests();
-
-      const created = createManagedTaskFlow({
-        ownerKey: "agent:main:main",
-        controllerId: "tests/corrupt-flow",
-        goal: "Corrupt flow",
-        status: "running",
-      });
-
-      const database = openOpenClawStateDatabase();
-      const db = getNodeSqliteKysely<TaskFlowRegistryTestDatabase>(database.db);
-      executeSqliteQuerySync(
-        database.db,
-        db.updateTable("flow_runs").set({ status: "done" }).where("flow_id", "=", created.flowId),
-      );
-
-      expect(() => loadTaskFlowRegistryStateFromSqlite()).toThrow(
-        "Invalid persisted task flow status",
-      );
-    });
-  });
-
   it("restores persisted wait-state, revision, and cancel intent from sqlite", async () => {
     await withFlowRegistryTempDir(async (root) => {
       process.env.OPENCLAW_STATE_DIR = root;
@@ -239,6 +194,115 @@ describe("task-flow-registry store runtime", () => {
     });
   });
 
+  it("migrates legacy owner_session_key schema before mirrored flow inserts", async () => {
+    await withFlowRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskFlowRegistryForTests();
+
+      const sqlitePath = resolveTaskFlowRegistrySqlitePath(process.env);
+      const { DatabaseSync } = requireNodeSqlite();
+      const db = new DatabaseSync(sqlitePath);
+      // This mirrors the live pre-migration table shape that kept owner_session_key as NOT NULL,
+      // which made current owner_key-only mirrored inserts fail with SQLITE_CONSTRAINT_NOTNULL.
+      db.exec(`
+        DROP TABLE IF EXISTS flow_runs;
+        CREATE TABLE flow_runs (
+          flow_id TEXT PRIMARY KEY,
+          owner_session_key TEXT NOT NULL,
+          requester_origin_json TEXT,
+          status TEXT NOT NULL,
+          notify_policy TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          current_step TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          ended_at INTEGER
+        );
+        INSERT INTO flow_runs (
+          flow_id,
+          owner_session_key,
+          status,
+          notify_policy,
+          goal,
+          current_step,
+          created_at,
+          updated_at
+        ) VALUES (
+          'legacy-flow',
+          'agent:main:legacy',
+          'running',
+          'done_only',
+          'Legacy flow',
+          'legacy_step',
+          10,
+          15
+        );
+      `);
+      db.close();
+      resetTaskFlowRegistryForTests({ persist: false });
+
+      const mirrored = createTaskFlowForTask({
+        task: {
+          ownerKey: "agent:main:main",
+          taskId: "task-mirrored",
+          notifyPolicy: "silent",
+          status: "queued",
+          label: "Context engine turn maintenance",
+          task: "Deferred context-engine maintenance after turn.",
+          createdAt: 20,
+        },
+      });
+
+      expect(mirrored.syncMode).toBe("task_mirrored");
+      expect(mirrored.ownerKey).toBe("agent:main:main");
+      expect(mirrored.controllerId).toBeUndefined();
+
+      const legacy = getTaskFlowById("legacy-flow");
+      expect(legacy?.ownerKey).toBe("agent:main:legacy");
+      expect(legacy?.controllerId).toBe("core/legacy-restored");
+
+      const migratedDb = new DatabaseSync(sqlitePath);
+      const columns = migratedDb.prepare(`PRAGMA table_info(flow_runs)`).all() as Array<{
+        name?: string;
+      }>;
+      migratedDb.close();
+      expect(columns.map((column) => column.name)).not.toContain("owner_session_key");
+    });
+  });
+
+  it("drops malformed requester origin json from sqlite flow state", async () => {
+    await withFlowRegistryTempDir(async (root) => {
+      process.env.OPENCLAW_STATE_DIR = root;
+      resetTaskFlowRegistryForTests();
+
+      const created = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        requesterOrigin: {
+          channel: "notifychat",
+          to: "notifychat:123",
+        },
+        controllerId: "tests/malformed-origin",
+        goal: "Restore malformed origin",
+        status: "running",
+      });
+
+      const sqlitePath = resolveTaskFlowRegistrySqlitePath(process.env);
+      const { DatabaseSync } = requireNodeSqlite();
+      const db = new DatabaseSync(sqlitePath);
+      db.prepare(`UPDATE flow_runs SET requester_origin_json = ? WHERE flow_id = ?`).run(
+        JSON.stringify(["notifychat", "123"]),
+        created.flowId,
+      );
+      db.close();
+
+      resetTaskFlowRegistryForTests({ persist: false });
+
+      const restored = getTaskFlowById(created.flowId);
+      expect(restored?.flowId).toBe(created.flowId);
+      expect(restored?.requesterOrigin).toBeUndefined();
+    });
+  });
+
   it("hardens the sqlite flow store directory and file modes", async () => {
     if (process.platform === "win32") {
       return;
@@ -257,11 +321,10 @@ describe("task-flow-registry store runtime", () => {
         waitJson: { kind: "task", taskId: "task-secured" },
       });
 
-      const databasePath = resolveOpenClawStateSqlitePath(process.env);
-      const registryDir = path.dirname(databasePath);
-      expect(databasePath.endsWith(path.join("state", "openclaw.sqlite"))).toBe(true);
+      const registryDir = resolveTaskFlowRegistryDir(process.env);
+      const sqlitePath = resolveTaskFlowRegistrySqlitePath(process.env);
       expect(statSync(registryDir).mode & 0o777).toBe(0o700);
-      expect(statSync(databasePath).mode & 0o777).toBe(0o600);
+      expect(statSync(sqlitePath).mode & 0o777).toBe(0o600);
     });
   });
 });

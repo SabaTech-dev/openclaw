@@ -10,7 +10,10 @@ import {
   readCodexAppServerBinding,
   writeCodexAppServerBinding,
 } from "./app-server/session-binding.js";
-import { getSharedCodexAppServerClient } from "./app-server/shared-client.js";
+import {
+  getLeasedSharedCodexAppServerClient,
+  releaseLeasedSharedCodexAppServerClient,
+} from "./app-server/shared-client.js";
 import { formatCodexDisplayText } from "./command-formatters.js";
 
 type ActiveTurn = {
@@ -61,19 +64,23 @@ export async function stopCodexConversationTurn(params: {
   }
   const runtime = resolveCodexAppServerRuntimeOptions({ pluginConfig: params.pluginConfig });
   const binding = await readCodexAppServerBinding(params);
-  const client = await getSharedCodexAppServerClient({
+  const client = await getLeasedSharedCodexAppServerClient({
     startOptions: runtime.start,
     timeoutMs: runtime.requestTimeoutMs,
     authProfileId: binding?.authProfileId,
   });
-  await client.request(
-    "turn/interrupt",
-    {
-      threadId: active.threadId,
-      turnId: active.turnId,
-    },
-    { timeoutMs: runtime.requestTimeoutMs },
-  );
+  try {
+    await client.request(
+      "turn/interrupt",
+      {
+        threadId: active.threadId,
+        turnId: active.turnId,
+      },
+      { timeoutMs: runtime.requestTimeoutMs },
+    );
+  } finally {
+    releaseLeasedSharedCodexAppServerClient(client);
+  }
   return { stopped: true, message: "Codex stop requested." };
 }
 
@@ -93,20 +100,24 @@ export async function steerCodexConversationTurn(params: {
   }
   const runtime = resolveCodexAppServerRuntimeOptions({ pluginConfig: params.pluginConfig });
   const binding = await readCodexAppServerBinding(params);
-  const client = await getSharedCodexAppServerClient({
+  const client = await getLeasedSharedCodexAppServerClient({
     startOptions: runtime.start,
     timeoutMs: runtime.requestTimeoutMs,
     authProfileId: binding?.authProfileId,
   });
-  await client.request(
-    "turn/steer",
-    {
-      threadId: active.threadId,
-      expectedTurnId: active.turnId,
-      input: [{ type: "text", text, text_elements: [] }],
-    },
-    { timeoutMs: runtime.requestTimeoutMs },
-  );
+  try {
+    await client.request(
+      "turn/steer",
+      {
+        threadId: active.threadId,
+        expectedTurnId: active.turnId,
+        input: [{ type: "text", text, text_elements: [] }],
+      },
+      { timeoutMs: runtime.requestTimeoutMs },
+    );
+  } finally {
+    releaseLeasedSharedCodexAppServerClient(client);
+  }
   return { steered: true, message: "Sent steer message to Codex." };
 }
 
@@ -245,24 +256,28 @@ async function resumeThreadWithOverrides(params: {
   serviceTier?: CodexServiceTier;
 }): Promise<CodexThreadResumeResponse> {
   const runtime = resolveCodexAppServerRuntimeOptions({ pluginConfig: params.pluginConfig });
-  const client = await getSharedCodexAppServerClient({
+  const client = await getLeasedSharedCodexAppServerClient({
     startOptions: runtime.start,
     timeoutMs: runtime.requestTimeoutMs,
     authProfileId: params.authProfileId,
   });
-  return await client.request(
-    CODEX_CONTROL_METHODS.resumeThread,
-    {
-      threadId: params.threadId,
-      ...(params.model ? { model: params.model } : {}),
-      approvalPolicy: params.approvalPolicy ?? runtime.approvalPolicy,
-      sandbox: params.sandbox ?? runtime.sandbox,
-      approvalsReviewer: runtime.approvalsReviewer,
-      ...(params.serviceTier ? { serviceTier: params.serviceTier } : {}),
-      persistExtendedHistory: true,
-    },
-    { timeoutMs: runtime.requestTimeoutMs },
-  );
+  try {
+    return await client.request(
+      CODEX_CONTROL_METHODS.resumeThread,
+      {
+        threadId: params.threadId,
+        ...(params.model ? { model: params.model } : {}),
+        approvalPolicy: params.approvalPolicy ?? runtime.approvalPolicy,
+        sandbox: params.sandbox ?? runtime.sandbox,
+        approvalsReviewer: runtime.approvalsReviewer,
+        ...(params.serviceTier ? { serviceTier: params.serviceTier } : {}),
+        persistExtendedHistory: true,
+      },
+      { timeoutMs: runtime.requestTimeoutMs },
+    );
+  } finally {
+    releaseLeasedSharedCodexAppServerClient(client);
+  }
 }
 
 function permissionsForMode(mode: PermissionsMode): {

@@ -1237,6 +1237,7 @@ export async function runEmbeddedPiAgent(
         if (params.currentMessageId !== undefined) {
           lastPersistedCurrentMessageId = params.currentMessageId;
         }
+        params.userTurnTranscriptRecorder?.markRuntimePersisted(message);
         params.onUserMessagePersisted?.(message);
       };
       const continueFromCurrentTranscript = () => {
@@ -1279,6 +1280,11 @@ export async function runEmbeddedPiAgent(
       }) => {
         const { profileId, reason } = failure;
         if (!profileId || !reason) {
+          return;
+        }
+        if (pluginHarnessOwnsTransport && reason === "timeout") {
+          // Harness-owned transport timeouts are lifecycle failures, not
+          // credential evidence. Do not poison OpenClaw auth cooldowns.
           return;
         }
         await markAuthProfileFailure({
@@ -1569,6 +1575,7 @@ export async function runEmbeddedPiAgent(
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             transcriptPrompt: params.transcriptPrompt,
+            userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
             currentInboundEventKind: params.currentInboundEventKind,
             currentInboundContext: params.currentInboundContext,
             images: params.images,
@@ -2493,6 +2500,7 @@ export async function runEmbeddedPiAgent(
               fallbackConfigured,
               failoverFailure: promptFailoverFailure,
               failoverReason: promptFailoverReason,
+              harnessOwnsTransport: pluginHarnessOwnsTransport,
               profileRotated: false,
             });
             if (
@@ -2531,6 +2539,7 @@ export async function runEmbeddedPiAgent(
                 fallbackConfigured,
                 failoverFailure: promptFailoverFailure,
                 failoverReason: promptFailoverReason,
+                harnessOwnsTransport: pluginHarnessOwnsTransport,
                 profileRotated: true,
               });
             }
@@ -2694,6 +2703,7 @@ export async function runEmbeddedPiAgent(
             idleTimedOut,
             timedOutDuringCompaction,
             timedOutDuringToolExecution,
+            harnessOwnsTransport: pluginHarnessOwnsTransport,
             profileRotated: false,
           });
           const assistantFailoverOutcome = await handleAssistantFailover({

@@ -26,32 +26,41 @@ function normalizeRequiredScope(params: { agentId?: string; sessionId?: string }
 
 export async function appendSessionTranscriptMessage(params: {
   dedupeLatestAssistantText?: string;
+  idempotencyLookup?: "scan" | "caller-checked";
   message: unknown;
+  prepareMessageAfterIdempotencyCheck?: (message: unknown) => unknown | undefined;
   agentId: string;
   path?: string;
   now?: number;
   sessionId: string;
   cwd?: string;
   config?: OpenClawConfig;
-}): Promise<{ messageId: string; message: unknown }> {
+}): Promise<{ messageId: string; message: unknown; appended: boolean } | undefined> {
   const scope = normalizeRequiredScope(params);
   const sessionVersion = await loadCurrentSessionVersion();
-  const message = isTranscriptAgentMessage(params.message)
-    ? redactTranscriptMessage(params.message, params.config)
-    : redactSecrets(params.message);
-  const { messageId } = appendSqliteSessionTranscriptMessageAtomically({
+  const preparedMessage = params.prepareMessageAfterIdempotencyCheck
+    ? params.prepareMessageAfterIdempotencyCheck(params.message)
+    : params.message;
+  if (preparedMessage === undefined) {
+    return undefined;
+  }
+  const message = isTranscriptAgentMessage(preparedMessage)
+    ? redactTranscriptMessage(preparedMessage, params.config)
+    : redactSecrets(preparedMessage);
+  const { messageId, appended } = appendSqliteSessionTranscriptMessageAtomically({
     agentId: scope.agentId,
     ...(params.path ? { path: params.path } : {}),
     ...(params.dedupeLatestAssistantText
       ? { dedupeLatestAssistantText: params.dedupeLatestAssistantText }
       : {}),
+    ...(params.idempotencyLookup ? { idempotencyLookup: params.idempotencyLookup } : {}),
     sessionId: scope.sessionId,
     sessionVersion,
     cwd: params.cwd,
     message,
     now: () => params.now ?? Date.now(),
   });
-  return { messageId, message };
+  return { messageId, message, appended };
 }
 
 function isTranscriptAgentMessage(value: unknown): value is AgentMessage {

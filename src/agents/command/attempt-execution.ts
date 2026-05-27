@@ -14,6 +14,10 @@ import { redactSensitiveText } from "../../logging/redact.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import {
+  appendUserTurnTranscriptMessage,
+  type PersistedUserTurnMessage,
+} from "../../sessions/user-turn-transcript.js";
 import { sanitizeForLog } from "../../terminal/ansi.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import type { AgentMessage } from "../agent-core-contract.js";
@@ -23,6 +27,7 @@ import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { runCliAgent } from "../cli-runner.js";
 import { getCliSessionBinding, setCliSessionBinding } from "../cli-session.js";
 import { FailoverError } from "../failover-error.js";
+import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
 import { resolveAvailableAgentHarnessPolicy } from "../harness/selection.js";
 import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
 import { isCliProvider } from "../model-selection.js";
@@ -78,6 +83,7 @@ type TranscriptUsage = {
 type PersistTextTurnTranscriptParams = {
   body: string;
   transcriptBody?: string;
+  userMessage?: PersistedUserTurnMessage;
   finalText: string;
   sessionId: string;
   sessionKey: string;
@@ -208,16 +214,24 @@ async function persistTextTurnTranscript(
   if (sessionEntry && params.sessionStore) {
     params.sessionStore[params.sessionKey] = sessionEntry;
   }
-  if (promptText) {
-    await appendSessionTranscriptMessage({
+  const userMessage = params.userMessage;
+  if (userMessage || promptText) {
+    await appendUserTurnTranscriptMessage({
       agentId: resolvedTranscript.agentId,
       sessionId: resolvedTranscript.sessionId,
+      sessionKey: params.sessionKey,
       cwd: params.sessionCwd,
-      message: {
-        role: "user",
-        content: promptText,
-        timestamp: Date.now(),
-      },
+      config: params.config,
+      beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
+      ...(userMessage
+        ? { message: userMessage }
+        : {
+            input: {
+              text: promptText,
+              timestamp: Date.now(),
+            },
+          }),
+      updateMode: "none",
     });
   }
 
@@ -249,6 +263,7 @@ async function persistTextTurnTranscript(
           stopReason: "stop",
           timestamp: Date.now(),
         },
+        config: params.config,
       });
     }
   }
@@ -304,6 +319,7 @@ export async function persistAcpTurnTranscript(params: {
 export async function persistCliTurnTranscript(params: {
   body: string;
   transcriptBody?: string;
+  userMessage?: PersistedUserTurnMessage;
   result: EmbeddedPiRunResult;
   sessionId: string;
   sessionKey: string;
@@ -323,6 +339,7 @@ export async function persistCliTurnTranscript(params: {
   return await persistTextTurnTranscript({
     body: gapFill ? "" : params.body,
     transcriptBody: gapFill ? undefined : params.transcriptBody,
+    ...(!gapFill && params.userMessage ? { userMessage: params.userMessage } : {}),
     finalText: replyText,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,

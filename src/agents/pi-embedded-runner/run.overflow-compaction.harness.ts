@@ -220,6 +220,7 @@ export const mockedGetApiKeyForModel = vi.fn(
     mode: "api-key" as const,
   }),
 );
+export const mockedMarkAuthProfileFailure = vi.fn(async () => {});
 export const mockedEnsureAuthProfileStore = vi.fn(() => ({}));
 export const mockedEnsureAuthProfileStoreWithoutExternalProfiles = vi.fn(
   (_agentDir?: string, _options?: { allowKeychainPrompt?: boolean }) => ({}),
@@ -406,6 +407,8 @@ export function resetRunOverflowCompactionHarnessMocks(): void {
       mode: "api-key",
     }),
   );
+  mockedMarkAuthProfileFailure.mockReset();
+  mockedMarkAuthProfileFailure.mockResolvedValue(undefined);
   mockedEnsureAuthProfileStore.mockReset();
   mockedEnsureAuthProfileStore.mockReturnValue({});
   mockedEnsureAuthProfileStoreWithoutExternalProfiles.mockReset();
@@ -461,7 +464,7 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("../auth-profiles.js", () => ({
     isProfileInCooldown: vi.fn(() => false),
-    markAuthProfileFailure: vi.fn(async () => {}),
+    markAuthProfileFailure: mockedMarkAuthProfileFailure,
     markAuthProfileSuccess: mockedMarkAuthProfileSuccess,
     resolveProfilesUnavailableReason: vi.fn(() => undefined),
   }));

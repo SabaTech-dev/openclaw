@@ -53,6 +53,22 @@ describe("SQLite embedded attempt session lock", () => {
     });
   });
 
+  it("releases the eager lock for abort cleanup", async () => {
+    await withTempDir({ prefix: "openclaw-attempt-session-abort-lock-" }, async (dir) => {
+      const dbPath = path.join(dir, "state.sqlite");
+      const first = await createEmbeddedAttemptSessionLockController({
+        lockOptions: { ...FAST_LOCK_OPTIONS, path: dbPath },
+      });
+      await first.releaseHeldLockForAbort();
+
+      const second = await createEmbeddedAttemptSessionLockController({
+        lockOptions: { ...FAST_LOCK_OPTIONS, path: dbPath },
+      });
+      await second.dispose();
+      await first.dispose();
+    });
+  });
+
   it("does not reacquire the same SQLite lease for nested owned writes", async () => {
     await withTempDir({ prefix: "openclaw-attempt-session-owned-write-" }, async (dir) => {
       const dbPath = path.join(dir, "state.sqlite");

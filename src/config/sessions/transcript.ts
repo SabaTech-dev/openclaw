@@ -374,14 +374,22 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
         ) as unknown as SessionTranscriptAssistantMessage,
       )
     : null;
-  const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
+  const appended = await appendSessionTranscriptMessage({
     agentId: target.agentId,
     ...(target.path ? { path: target.path } : {}),
     ...(dedupeLatestAssistantText ? { dedupeLatestAssistantText } : {}),
+    ...(explicitIdempotencyKey ? { idempotencyLookup: "scan" } : {}),
     message,
     sessionId: entry.sessionId,
     config: params.config,
   });
+  if (!appended) {
+    return { ok: false, reason: "message skipped" };
+  }
+  const { messageId, message: appendedMessage } = appended;
+  if (!appended.appended) {
+    return { ok: true, messageId };
+  }
 
   switch (params.updateMode ?? "inline") {
     case "inline":

@@ -188,6 +188,18 @@ export function resolveSessionTranscriptPathInDir(
   return path.resolve(sessionsDir, fileName);
 }
 
+export function resolveSessionFilePath(
+  sessionId: string,
+  entry?: { sessionFile?: string },
+  options?: { agentId?: string; env?: NodeJS.ProcessEnv; sessionsDir?: string },
+): string {
+  const sessionsDir = options?.sessionsDir ?? path.dirname(resolveStorePath(undefined, options));
+  const persisted = entry?.sessionFile?.trim();
+  return persisted
+    ? path.resolve(sessionsDir, persisted)
+    : resolveSessionTranscriptPathInDir(sessionId, sessionsDir);
+}
+
 export function loadSessionStore(storePath: string): Record<string, SessionEntry> {
   return loadSqliteSessionEntries(resolveSessionRowOptionsFromStorePath(storePath));
 }

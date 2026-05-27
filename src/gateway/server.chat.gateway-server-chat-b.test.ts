@@ -4,8 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import { clearConfigCache } from "../config/config.js";
-import { getSessionEntry } from "../config/sessions.js";
-import { replaceSqliteSessionTranscriptEvents } from "../config/sessions/transcript-store.sqlite.js";
+import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { setMaxChatHistoryMessagesBytesForTest } from "./server-constants.js";
 import type { GatewayRequestContext, RespondFn } from "./server-methods/shared-types.js";
@@ -19,7 +18,7 @@ import {
   onceMessage,
   rpcReq,
   testState,
-  seedGatewaySessionEntries,
+  writeSessionStore,
 } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
@@ -73,6 +72,7 @@ async function withGatewayChatHarness(
   const createSessionDir = async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     tempDirs.push(sessionDir);
+    testState.sessionStorePath = path.join(sessionDir, "sessions.json");
     return sessionDir;
   };
 
@@ -81,6 +81,7 @@ async function withGatewayChatHarness(
   } finally {
     setMaxChatHistoryMessagesBytesForTest();
     clearConfigCache();
+    testState.sessionStorePath = undefined;
     ws.close();
     await Promise.all(
       tempDirs.map((dir) =>
@@ -90,8 +91,8 @@ async function withGatewayChatHarness(
   }
 }
 
-async function seedMainSessionEntry() {
-  await seedGatewaySessionEntries({
+async function writeMainSessionStore() {
+  await writeSessionStore({
     entries: {
       main: { sessionId: "sess-main", updatedAt: Date.now() },
     },
@@ -108,12 +109,8 @@ async function writeGatewayConfig(config: Record<string, unknown>) {
   clearConfigCache();
 }
 
-async function writeMainSessionTranscript(_sessionDir: string, lines: string[]) {
-  replaceSqliteSessionTranscriptEvents({
-    agentId: "main",
-    sessionId: "sess-main",
-    events: lines.map((line) => JSON.parse(line) as unknown),
-  });
+async function writeMainSessionTranscript(sessionDir: string, lines: string[]) {
+  await fs.writeFile(path.join(sessionDir, "sess-main.jsonl"), `${lines.join("\n")}\n`, "utf-8");
 }
 
 async function fetchHistoryMessages(
@@ -132,6 +129,22 @@ async function fetchHistoryMessages(
   return historyRes.payload?.messages ?? [];
 }
 
+type ConfiguredImageModelCase = {
+  id: string;
+  imageModel: AgentModelConfig;
+};
+
+const configuredImageModelCases: ConfiguredImageModelCase[] = [
+  {
+    id: "with-image-fallback",
+    imageModel: { primary: "openai/gpt-4o", fallbacks: ["openai/gpt-4o-mini"] },
+  },
+  {
+    id: "without-image-fallback",
+    imageModel: { primary: "openai/gpt-4o" },
+  },
+];
+
 async function prepareMainHistoryHarness(params: {
   ws: GatewaySocket;
   createSessionDir: () => Promise<string>;
@@ -142,7 +155,7 @@ async function prepareMainHistoryHarness(params: {
   }
   await connectOk(params.ws);
   const sessionDir = await params.createSessionDir();
-  await seedMainSessionEntry();
+  await writeMainSessionStore();
   return sessionDir;
 }
 
@@ -150,10 +163,11 @@ describe("gateway server chat", () => {
   test("chat.history does not wait for model catalog discovery to return history", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     try {
+      testState.sessionStorePath = path.join(sessionDir, "sessions.json");
       testState.agentConfig = {
         model: { primary: "test-provider/slow-catalog-model" },
       };
-      await seedGatewaySessionEntries({
+      await writeSessionStore({
         entries: {
           main: {
             sessionId: "sess-main",
@@ -207,6 +221,7 @@ describe("gateway server chat", () => {
     } finally {
       clearConfigCache();
       testState.agentConfig = undefined;
+      testState.sessionStorePath = undefined;
       await fs.rm(sessionDir, { recursive: true, force: true });
     }
   });
@@ -215,7 +230,8 @@ describe("gateway server chat", () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     const dispatchRelease = createDeferred<void>();
     try {
-      await seedGatewaySessionEntries({
+      testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+      await writeSessionStore({
         entries: {
           main: {
             sessionId: "sess-main",
@@ -339,16 +355,171 @@ describe("gateway server chat", () => {
     } finally {
       dispatchRelease.resolve();
       dispatchInboundMessageMock.mockReset();
+      testState.sessionStorePath = undefined;
       clearConfigCache();
       await fs.rm(sessionDir, { recursive: true, force: true });
     }
   });
 
+  test.each(configuredImageModelCases)(
+    "chat.send preserves text-only image uploads as MediaPaths even with configured imageModel: $id",
+    async ({ id, imageModel }) => {
+      const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
+      try {
+        testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+        testState.agentConfig = {
+          model: {
+            primary: "anthropic/claude-opus-4-6",
+            fallbacks: ["anthropic/claude-haiku-4-6"],
+          },
+          imageModel,
+          models: {
+            "anthropic/claude-opus-4-6": {},
+          },
+        };
+        await writeSessionStore({
+          entries: {
+            main: {
+              sessionId: "sess-main",
+              modelProvider: "anthropic",
+              model: "claude-opus-4-6",
+              updatedAt: Date.now(),
+            },
+          },
+        });
+
+        const context = {
+          loadGatewayModelCatalog: vi.fn<GatewayRequestContext["loadGatewayModelCatalog"]>(
+            async () => [
+              {
+                id: "claude-opus-4-6",
+                name: "Claude Opus 4.6",
+                provider: "anthropic",
+                input: ["text"],
+              },
+              {
+                id: "gpt-4o",
+                name: "GPT-4o",
+                provider: "openai",
+                input: ["text", "image"],
+              },
+              {
+                id: "gpt-4o-mini",
+                name: "GPT-4o mini",
+                provider: "openai",
+                input: ["text", "image"],
+              },
+              {
+                id: "claude-haiku-4-6",
+                name: "Claude Haiku 4.6",
+                provider: "anthropic",
+                input: ["text"],
+              },
+            ],
+          ),
+          logGateway: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          agentRunSeq: new Map<string, number>(),
+          chatAbortControllers: new Map(),
+          chatAbortedRuns: new Map(),
+          chatRunBuffers: new Map(),
+          chatDeltaSentAt: new Map(),
+          chatDeltaLastBroadcastLen: new Map(),
+          chatDeltaLastBroadcastText: new Map(),
+          addChatRun: vi.fn(),
+          removeChatRun: vi.fn(),
+          broadcast: vi.fn(),
+          nodeSendToSession: vi.fn(),
+          registerToolEventRecipient: vi.fn(),
+          dedupe: new Map(),
+        } as unknown as GatewayRequestContext;
+        const pngB64 =
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+        let captured: { ctx?: Record<string, unknown>; replyOptions?: GetReplyOptions } | undefined;
+        dispatchInboundMessageMock.mockImplementationOnce(async (...args: unknown[]) => {
+          const [params] = args as [
+            {
+              ctx: Record<string, unknown>;
+              replyOptions?: GetReplyOptions;
+            },
+          ];
+          captured = {
+            ctx: params.ctx,
+            replyOptions: params.replyOptions,
+          };
+        });
+
+        const { chatHandlers } = await import("./server-methods/chat.js");
+        const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+        await chatHandlers["chat.send"]({
+          req: {
+            type: "req",
+            id: `configured-image-model-${id}`,
+            method: "chat.send",
+            params: {
+              sessionKey: "main",
+              message: "see image",
+              idempotencyKey: `idem-configured-image-model-${id}`,
+              attachments: [
+                {
+                  type: "image",
+                  mimeType: "image/png",
+                  fileName: "dot.png",
+                  content: pngB64,
+                },
+              ],
+            },
+          },
+          params: {
+            sessionKey: "main",
+            message: "see image",
+            idempotencyKey: `idem-configured-image-model-${id}`,
+            attachments: [
+              {
+                type: "image",
+                mimeType: "image/png",
+                fileName: "dot.png",
+                content: pngB64,
+              },
+            ],
+          },
+          client: null,
+          isWebchatConnect: () => false,
+          respond: ((ok, payload, error) => {
+            responses.push({ ok, payload, error });
+          }) as RespondFn,
+          context,
+        });
+
+        expect(responses[0]?.ok).toBe(true);
+        await vi.waitFor(() => expect(captured).toBeDefined(), FAST_WAIT_OPTS);
+        expect(captured?.replyOptions?.images).toBeUndefined();
+        expect(captured?.ctx?.MediaPath).toEqual(expect.any(String));
+        expect(captured?.ctx?.MediaPaths).toEqual([expect.any(String)]);
+        expect(captured?.ctx?.MediaType).toBe("image/png");
+        expect(captured?.ctx?.MediaTypes).toEqual(["image/png"]);
+        expect(captured?.ctx?.MediaStaged).toBe(true);
+        await vi.waitFor(() => expect(context.removeChatRun).toHaveBeenCalledTimes(1));
+      } finally {
+        dispatchInboundMessageMock.mockReset();
+        testState.agentConfig = undefined;
+        testState.sessionStorePath = undefined;
+        clearConfigCache();
+        await fs.rm(sessionDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("chat.send reuses an active internal run for duplicate WebChat text sends", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     const dispatchRelease = createDeferred<void>();
     try {
-      await seedGatewaySessionEntries({
+      testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+      await writeSessionStore({
         entries: {
           main: {
             sessionId: "sess-main",
@@ -455,6 +626,7 @@ describe("gateway server chat", () => {
     } finally {
       dispatchRelease.resolve();
       dispatchInboundMessageMock.mockReset();
+      testState.sessionStorePath = undefined;
       clearConfigCache();
       await fs.rm(sessionDir, { recursive: true, force: true });
     }
@@ -463,7 +635,8 @@ describe("gateway server chat", () => {
   test("chat.send starts the next WebChat turn after the prior internal run finishes", async () => {
     const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     try {
-      await seedGatewaySessionEntries({
+      testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+      await writeSessionStore({
         entries: {
           main: {
             sessionId: "sess-main",
@@ -559,6 +732,7 @@ describe("gateway server chat", () => {
       expect(context.addChatRun).toHaveBeenCalledTimes(2);
     } finally {
       dispatchInboundMessageMock.mockReset();
+      testState.sessionStorePath = undefined;
       clearConfigCache();
       await fs.rm(sessionDir, { recursive: true, force: true });
     }
@@ -608,7 +782,7 @@ describe("gateway server chat", () => {
       );
       process.env.HOME = homeDir;
       try {
-        await seedGatewaySessionEntries({
+        await writeSessionStore({
           entries: {
             main: {
               sessionId: "sess-main",
@@ -670,7 +844,7 @@ describe("gateway server chat", () => {
       expect(bytes).toBeLessThanOrEqual(historyMaxBytes);
       expect(messages.length).toBeLessThan(45);
 
-      await seedGatewaySessionEntries({
+      await writeSessionStore({
         entries: {
           main: {
             sessionId: "sess-main",
@@ -688,9 +862,16 @@ describe("gateway server chat", () => {
       });
       expect(sendRes.ok).toBe(true);
 
-      const stored = getSessionEntry({ agentId: "main", sessionKey: "agent:main:main" });
-      expect(stored?.lastChannel).toBe("whatsapp");
-      expect(stored?.lastTo).toBe("+1555");
+      const sessionStorePath = testState.sessionStorePath;
+      if (!sessionStorePath) {
+        throw new Error("expected session store path");
+      }
+      const stored = JSON.parse(await fs.readFile(sessionStorePath, "utf-8")) as Record<
+        string,
+        { lastChannel?: string; lastTo?: string } | undefined
+      >;
+      expect(stored["agent:main:main"]?.lastChannel).toBe("whatsapp");
+      expect(stored["agent:main:main"]?.lastTo).toBe("+1555");
     });
   });
 
@@ -700,7 +881,7 @@ describe("gateway server chat", () => {
       await connectOk(ws);
 
       await createSessionDir();
-      await seedMainSessionEntry();
+      await writeMainSessionStore();
       testState.agentConfig = { blockStreamingDefault: "on" };
       try {
         let capturedOpts: GetReplyOptions | undefined;
@@ -724,37 +905,6 @@ describe("gateway server chat", () => {
       } finally {
         testState.agentConfig = undefined;
       }
-    });
-  });
-
-  test("chat.send forwards one-shot thinking and fast mode overrides", async () => {
-    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
-      const spy = getReplyFromConfig;
-      await connectOk(ws);
-
-      await createSessionDir();
-      await seedMainSessionEntry();
-      let capturedOpts: GetReplyOptions | undefined;
-      mockGetReplyFromConfigOnce(async (_ctx, opts) => {
-        capturedOpts = opts;
-        return undefined;
-      });
-
-      const sendRes = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "hello",
-        thinking: "high",
-        fastMode: true,
-        idempotencyKey: "idem-thinking-fast",
-      });
-      expect(sendRes.ok).toBe(true);
-
-      await vi.waitFor(() => {
-        expect(spy.mock.calls.length).toBeGreaterThan(0);
-      }, FAST_WAIT_OPTS);
-
-      expect(capturedOpts?.thinkingLevelOverride).toBe("high");
-      expect(capturedOpts?.fastModeOverride).toBe(true);
     });
   });
 
@@ -859,7 +1009,7 @@ describe("gateway server chat", () => {
       await connectOk(ws);
 
       const sessionDir = await createSessionDir();
-      await seedMainSessionEntry();
+      await writeMainSessionStore();
 
       await writeMainSessionTranscript(sessionDir, [
         JSON.stringify({
@@ -895,7 +1045,7 @@ describe("gateway server chat", () => {
       await connectOk(ws);
 
       const sessionDir = await createSessionDir();
-      await seedMainSessionEntry();
+      await writeMainSessionStore();
 
       const lines = [
         JSON.stringify({
@@ -1110,7 +1260,7 @@ describe("gateway server chat", () => {
       await connectOk(ws);
 
       await createSessionDir();
-      await seedMainSessionEntry();
+      await writeMainSessionStore();
 
       mockGetReplyFromConfigOnce(async (_ctx, opts) => {
         opts?.onAgentRunStart?.(opts.runId ?? "idem-abort-1");

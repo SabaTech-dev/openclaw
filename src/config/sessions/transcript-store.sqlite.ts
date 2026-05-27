@@ -43,6 +43,7 @@ export type AppendSqliteSessionTranscriptEventsOptions = SqliteSessionTranscript
 export type AppendSqliteSessionTranscriptMessageOptions = SqliteSessionTranscriptStoreOptions & {
   cwd?: string;
   dedupeLatestAssistantText?: string;
+  idempotencyLookup?: "scan" | "caller-checked";
   message: unknown;
   now?: () => number;
   sessionVersion: number;
@@ -729,7 +730,7 @@ export function appendSqliteSessionTranscriptEvents(
 
 export function appendSqliteSessionTranscriptMessage(
   options: AppendSqliteSessionTranscriptMessageOptions,
-): { messageId: string } {
+): { messageId: string; appended: boolean } {
   const { sessionId } = normalizeTranscriptScope(options);
   const now = options.now?.() ?? Date.now();
   const idempotencyKey = readMessageIdempotencyKey(options.message);
@@ -755,7 +756,7 @@ export function appendSqliteSessionTranscriptMessage(
       nextSeq += 1;
     }
 
-    if (idempotencyKey) {
+    if (idempotencyKey && options.idempotencyLookup === "scan") {
       const existing = executeSqliteQueryTakeFirstSync(
         database.db,
         db
@@ -766,7 +767,7 @@ export function appendSqliteSessionTranscriptMessage(
           .limit(1),
       );
       if (typeof existing?.event_id === "string") {
-        return existing.event_id;
+        return { messageId: existing.event_id, appended: false };
       }
     }
 
@@ -778,7 +779,7 @@ export function appendSqliteSessionTranscriptMessage(
         expectedText: dedupeLatestAssistantText,
       });
       if (existingMessageId) {
-        return existingMessageId;
+        return { messageId: existingMessageId, appended: false };
       }
     }
 
@@ -797,10 +798,10 @@ export function appendSqliteSessionTranscriptMessage(
       },
       createdAt: now,
     });
-    return newMessageId;
+    return { messageId: newMessageId, appended: true };
   }, options);
 
-  return { messageId };
+  return messageId;
 }
 
 export function replaceSqliteSessionTranscriptEvents(

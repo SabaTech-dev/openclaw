@@ -988,18 +988,18 @@ export async function startGatewayServer(
       getRuntimeSnapshot,
       getEventLoopHealth: readinessEventLoopHealth.snapshot,
     });
-  const stopRegisteredPostReadySidecars = () => {
+  const stopRegisteredPostReadySidecars = async () => {
     const postReadySidecars = runtimeState.postReadySidecars;
     runtimeState.postReadySidecars = [];
     for (const postReadySidecar of postReadySidecars) {
-      postReadySidecar.stop();
+      await postReadySidecar.stop();
     }
   };
-  const stopRegisteredGatewayLifetimeSidecars = () => {
+  const stopRegisteredGatewayLifetimeSidecars = async () => {
     const gatewayLifetimeSidecars = runtimeState.gatewayLifetimeSidecars;
     runtimeState.gatewayLifetimeSidecars = [];
     for (const gatewayLifetimeSidecar of gatewayLifetimeSidecars) {
-      gatewayLifetimeSidecar.stop();
+      await gatewayLifetimeSidecar.stop();
     }
   };
   const createCloseHandler = () => async (opts?: GatewayCloseOptions) => {
@@ -1045,8 +1045,8 @@ export async function startGatewayServer(
   let clearFallbackGatewayContextForServer = () => {};
   const closeOnStartupFailure = async () => {
     try {
-      stopRegisteredGatewayLifetimeSidecars();
-      stopRegisteredPostReadySidecars();
+      await stopRegisteredGatewayLifetimeSidecars();
+      await stopRegisteredPostReadySidecars();
       await runClosePrelude();
       await createCloseHandler()({ reason: "gateway startup failed" });
     } finally {
@@ -1733,8 +1733,8 @@ export async function startGatewayServer(
     close: async (opts) => {
       try {
         markClosePreludeStarted();
-        stopRegisteredGatewayLifetimeSidecars();
-        stopRegisteredPostReadySidecars();
+        await stopRegisteredGatewayLifetimeSidecars();
+        await stopRegisteredPostReadySidecars();
         // Run gateway_stop plugin hook before shutdown
         const { runGlobalGatewayStopSafely } = await import("../plugins/hook-runner-global.js");
         await runGlobalGatewayStopSafely({

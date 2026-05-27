@@ -682,6 +682,37 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     emitSpy.mockRestore();
   });
 
+  it("dedupes concurrent exact assistant appends by idempotency key", async () => {
+    await writeTranscriptStore();
+    const idempotencyKey = "mirror:concurrent-assistant";
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        appendExactAssistantMessageToSessionTranscript({
+          sessionKey,
+          idempotencyKey,
+          updateMode: "none",
+          message: createExactAssistantMessage({
+            text: "Mirrored reply",
+            provider: "openclaw",
+            model: "delivery-mirror",
+          }),
+        }),
+      ),
+    );
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    const messageIds = results.map((result) => (result.ok ? result.messageId : ""));
+    expect(new Set(messageIds).size).toBe(1);
+    const records = readEvents().filter(
+      (record) =>
+        record.type === "message" &&
+        record.message?.role === "assistant" &&
+        record.message.idempotencyKey === idempotencyKey,
+    );
+    expect(records).toHaveLength(1);
+  });
+
   it("serializes concurrent parent-linked transcript appends", async () => {
     const targetSessionId = "concurrent-tree-session";
     appendSqliteSessionTranscriptEvent({
@@ -748,6 +779,49 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     expect(raw).not.toContain("abcd-efgh-ijkl-mnop");
     expect(raw).not.toContain("AIzaSyD-very-real-looking");
     expect(raw).not.toContain("1//0fake-refresh-token");
+  });
+
+  it("requires explicit idempotency scanning for direct SQLite transcript appends", async () => {
+    const uncheckedSessionId = "unchecked-idempotency-session";
+    const checkedSessionId = "checked-idempotency-session";
+    const message = {
+      role: "assistant",
+      content: "fresh keyed append",
+      idempotencyKey: "fresh-key",
+    };
+
+    await appendSessionTranscriptMessage({
+      agentId: "main",
+      sessionId: uncheckedSessionId,
+      message,
+    });
+    const uncheckedSecondAppend = await appendSessionTranscriptMessage({
+      agentId: "main",
+      sessionId: uncheckedSessionId,
+      message,
+    });
+
+    const checkedFirstAppend = await appendSessionTranscriptMessage({
+      agentId: "main",
+      sessionId: checkedSessionId,
+      message,
+      idempotencyLookup: "scan",
+    });
+    const checkedSecondAppend = await appendSessionTranscriptMessage({
+      agentId: "main",
+      sessionId: checkedSessionId,
+      message,
+      idempotencyLookup: "scan",
+    });
+
+    const countMessages = (sessionId: string) =>
+      readEvents(sessionId).filter((record) => record.type === "message").length;
+
+    expect(uncheckedSecondAppend?.appended).toBe(true);
+    expect(countMessages(uncheckedSessionId)).toBe(2);
+    expect(checkedSecondAppend?.appended).toBe(false);
+    expect(checkedSecondAppend?.messageId).toBe(checkedFirstAppend?.messageId);
+    expect(countMessages(checkedSessionId)).toBe(1);
   });
 
   it("appends to existing SQLite transcript chains", async () => {

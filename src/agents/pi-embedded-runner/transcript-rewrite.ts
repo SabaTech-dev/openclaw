@@ -6,6 +6,7 @@ import type {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import type { AgentMessage } from "../agent-core-contract.js";
+import type { SessionManager } from "../transcript/session-transcript-contract.js";
 import {
   persistTranscriptStateMutationForSession,
   readTranscriptStateForSession,
@@ -14,6 +15,21 @@ import {
 import { log } from "./logger.js";
 
 type SessionBranchEntry = ReturnType<TranscriptState["getBranch"]>[number];
+type SessionManagerLike = Pick<
+  SessionManager,
+  | "appendCompaction"
+  | "appendCustomEntry"
+  | "appendCustomMessageEntry"
+  | "appendLabelChange"
+  | "appendMessage"
+  | "appendModelChange"
+  | "appendSessionInfo"
+  | "appendThinkingLevelChange"
+  | "branch"
+  | "branchWithSummary"
+  | "getBranch"
+  | "resetLeaf"
+>;
 
 function estimateMessageBytes(message: AgentMessage): number {
   return Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -79,6 +95,157 @@ function appendTranscriptStateBranchEntry(params: {
     remapEntryId(entry.targetId, rewrittenEntryIds) ?? entry.targetId,
     entry.label,
   );
+}
+
+function appendSessionManagerBranchEntry(params: {
+  sessionManager: SessionManagerLike;
+  entry: SessionBranchEntry;
+  rewrittenEntryIds: ReadonlyMap<string, string>;
+}): string {
+  const { sessionManager, entry, rewrittenEntryIds } = params;
+  if (entry.type === "message") {
+    return sessionManager.appendMessage(
+      entry.message as Parameters<SessionManager["appendMessage"]>[0],
+    );
+  }
+  if (entry.type === "compaction") {
+    return sessionManager.appendCompaction(
+      entry.summary,
+      remapEntryId(entry.firstKeptEntryId, rewrittenEntryIds) ?? entry.firstKeptEntryId,
+      entry.tokensBefore,
+      entry.details,
+      entry.fromHook,
+    );
+  }
+  if (entry.type === "thinking_level_change") {
+    return sessionManager.appendThinkingLevelChange(entry.thinkingLevel);
+  }
+  if (entry.type === "model_change") {
+    return sessionManager.appendModelChange(entry.provider, entry.modelId);
+  }
+  if (entry.type === "custom") {
+    return sessionManager.appendCustomEntry(entry.customType, entry.data);
+  }
+  if (entry.type === "custom_message") {
+    return sessionManager.appendCustomMessageEntry(
+      entry.customType,
+      entry.content,
+      entry.display,
+      entry.details,
+    );
+  }
+  if (entry.type === "session_info") {
+    return sessionManager.appendSessionInfo(entry.name ?? "");
+  }
+  if (entry.type === "branch_summary") {
+    return sessionManager.branchWithSummary(
+      remapEntryId(entry.parentId, rewrittenEntryIds),
+      entry.summary,
+      entry.details,
+      entry.fromHook,
+    );
+  }
+  return sessionManager.appendLabelChange(
+    remapEntryId(entry.targetId, rewrittenEntryIds) ?? entry.targetId,
+    entry.label,
+  );
+}
+
+export function rewriteTranscriptEntriesInSessionManager(params: {
+  sessionManager: SessionManagerLike;
+  replacements: TranscriptRewriteReplacement[];
+}): TranscriptRewriteResult {
+  const replacementsById = new Map(
+    params.replacements
+      .filter((replacement) => replacement.entryId.trim().length > 0)
+      .map((replacement) => [replacement.entryId, replacement.message]),
+  );
+  if (replacementsById.size === 0) {
+    return {
+      changed: false,
+      bytesFreed: 0,
+      rewrittenEntries: 0,
+      reason: "no replacements requested",
+    };
+  }
+
+  const branch = params.sessionManager.getBranch();
+  if (branch.length === 0) {
+    return {
+      changed: false,
+      bytesFreed: 0,
+      rewrittenEntries: 0,
+      reason: "empty session",
+    };
+  }
+
+  const matchedIndices: number[] = [];
+  let bytesFreed = 0;
+  for (let index = 0; index < branch.length; index += 1) {
+    const entry = branch[index];
+    if (entry.type !== "message") {
+      continue;
+    }
+    const replacement = replacementsById.get(entry.id);
+    if (!replacement) {
+      continue;
+    }
+    matchedIndices.push(index);
+    bytesFreed += Math.max(
+      0,
+      estimateMessageBytes(entry.message) - estimateMessageBytes(replacement),
+    );
+  }
+
+  if (matchedIndices.length === 0) {
+    return {
+      changed: false,
+      bytesFreed: 0,
+      rewrittenEntries: 0,
+      reason: "no matching message entries",
+    };
+  }
+
+  const firstMatchedEntry = branch[matchedIndices[0]] as
+    | Extract<SessionBranchEntry, { type: "message" }>
+    | undefined;
+  if (!firstMatchedEntry) {
+    return {
+      changed: false,
+      bytesFreed: 0,
+      rewrittenEntries: 0,
+      reason: "invalid first rewrite target",
+    };
+  }
+
+  if (!firstMatchedEntry.parentId) {
+    params.sessionManager.resetLeaf();
+  } else {
+    params.sessionManager.branch(firstMatchedEntry.parentId);
+  }
+
+  const rewrittenEntryIds = new Map<string, string>();
+  for (let index = matchedIndices[0]; index < branch.length; index += 1) {
+    const entry = branch[index];
+    const replacement = entry.type === "message" ? replacementsById.get(entry.id) : undefined;
+    const newEntryId =
+      replacement === undefined
+        ? appendSessionManagerBranchEntry({
+            sessionManager: params.sessionManager,
+            entry,
+            rewrittenEntryIds,
+          })
+        : params.sessionManager.appendMessage(
+            replacement as Parameters<SessionManager["appendMessage"]>[0],
+          );
+    rewrittenEntryIds.set(entry.id, newEntryId);
+  }
+
+  return {
+    changed: true,
+    bytesFreed,
+    rewrittenEntries: matchedIndices.length,
+  };
 }
 
 export function rewriteTranscriptEntriesInState(params: {

@@ -7,15 +7,21 @@ import { buildAgentHookContextChannelFields } from "../plugins/hook-agent-contex
 import { resolveBlockMessage } from "../plugins/hook-decision-types.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 import { loadCliSessionHistoryMessages } from "./cli-runner/session-history.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./cli-runner/types.js";
 import { FailoverError, isFailoverError, resolveFailoverStatus } from "./failover-error.js";
+import {
+  finalizeHarnessContextEngineTurn,
+  runHarnessContextEngineMaintenance,
+} from "./harness/context-engine-lifecycle.js";
 import { buildAgentHookContext } from "./harness/hook-context.js";
 import { buildAgentHookConversationMessages } from "./harness/hook-history.js";
 import {
   runAgentHarnessAgentEndHook,
   runAgentHarnessLlmInputHook,
   runAgentHarnessLlmOutputHook,
+  awaitAgentHarnessAgentEndHook,
 } from "./harness/lifecycle-hook-helpers.js";
 import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-helpers.js";
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
@@ -67,6 +73,133 @@ function buildCliHookAssistantMessage(params: {
     stopReason: "stop",
     timestamp: Date.now(),
   };
+}
+
+function isAgentMessage(value: unknown): value is AgentMessage {
+  return Boolean(value && typeof value === "object" && "role" in value);
+}
+
+function buildCliContextEngineUserMessage(prompt: string): AgentMessage {
+  return {
+    role: "user",
+    content: prompt,
+    timestamp: Date.now(),
+  } as AgentMessage;
+}
+
+function buildCliContextEngineAssistantMessage(params: {
+  text: string;
+  provider: string;
+  model: string;
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+}): AgentMessage {
+  return buildCliHookAssistantMessage(params) as AgentMessage;
+}
+
+type CliAgentEndHookParams = Parameters<typeof runAgentHarnessAgentEndHook>[0];
+
+function buildCliTranscriptScope(params: RunCliAgentParams) {
+  return {
+    agentId: params.agentId ?? DEFAULT_AGENT_ID,
+    sessionId: params.sessionId,
+  };
+}
+
+function shouldAwaitCliAgentEndHook(params: RunCliAgentParams): boolean {
+  return !params.messageChannel && !params.messageProvider;
+}
+
+async function runCliAgentEndHook(
+  params: RunCliAgentParams,
+  hookParams: CliAgentEndHookParams,
+): Promise<void> {
+  if (shouldAwaitCliAgentEndHook(params)) {
+    await awaitAgentHarnessAgentEndHook(hookParams);
+    return;
+  }
+  runAgentHarnessAgentEndHook(hookParams);
+}
+
+async function persistApprovedCliUserTurnTranscript(params: RunCliAgentParams): Promise<void> {
+  if (params.suppressNextUserMessagePersistence === true || !params.userTurnTranscriptRecorder) {
+    return;
+  }
+
+  const target = {
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey ?? params.sessionId,
+    sessionEntry: params.sessionEntry,
+    agentId: params.agentId ?? "main",
+    cwd: params.workspaceDir,
+    ...(params.config ? { config: params.config } : {}),
+  };
+  const persisted = await params.userTurnTranscriptRecorder.persistApproved({ target });
+  if (persisted) {
+    try {
+      const notification = params.onUserMessagePersisted?.(persisted.message);
+      if (notification) {
+        void Promise.resolve(notification).catch((error) => {
+          log.warn(`CLI user turn persistence notification failed: ${formatErrorMessage(error)}`);
+        });
+      }
+    } catch (error) {
+      log.warn(`CLI user turn persistence notification failed: ${formatErrorMessage(error)}`);
+    }
+  }
+}
+
+async function finalizeCliContextEngineTurn(params: {
+  context: PreparedCliRunContext;
+  historyMessages: unknown[];
+  assistantText: string;
+  output: Awaited<
+    ReturnType<typeof import("./cli-runner/execute.runtime.js").executePreparedCliRun>
+  >;
+}): Promise<void> {
+  const { context } = params;
+  if (!context.contextEngine) {
+    return;
+  }
+
+  const { params: runParams } = context;
+  const prePromptMessages = params.historyMessages.filter(isAgentMessage);
+  const turnMessages: AgentMessage[] = [];
+  if (context.contextEngineTurnPrompt) {
+    turnMessages.push(buildCliContextEngineUserMessage(context.contextEngineTurnPrompt));
+  }
+  if (params.assistantText) {
+    turnMessages.push(
+      buildCliContextEngineAssistantMessage({
+        text: params.assistantText,
+        provider: runParams.provider,
+        model: context.modelId,
+        usage: params.output.usage,
+      }),
+    );
+  }
+
+  const result = await finalizeHarnessContextEngineTurn({
+    contextEngine: context.contextEngine,
+    promptError: false,
+    aborted: runParams.abortSignal?.aborted === true,
+    yieldAborted: false,
+    sessionIdUsed: runParams.sessionId,
+    sessionKey: runParams.sessionKey,
+    transcriptScope: buildCliTranscriptScope(runParams),
+    messagesSnapshot: [...prePromptMessages, ...turnMessages],
+    prePromptMessageCount: prePromptMessages.length,
+    config: context.contextEngineConfig,
+    runMaintenance: async (maintenanceParams) =>
+      await runHarnessContextEngineMaintenance(maintenanceParams),
+    warn: (message) => log.warn(message),
+  });
+  void result;
 }
 
 export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPiRunResult> {
@@ -488,6 +621,7 @@ export async function runPreparedCliAgent(
       }
     }
 
+    await persistApprovedCliUserTurnTranscript(params);
     runAgentHarnessLlmInputHook({
       event: llmInputEvent,
       ctx: hookContext,

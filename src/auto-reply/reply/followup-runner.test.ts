@@ -5,6 +5,10 @@ import { DELIVERY_NO_REPLY_RUNTIME_CONTRACT } from "openclaw/plugin-sdk/agent-ru
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import {
+  createUserTurnTranscriptRecorder,
+  type PersistedUserTurnMessage,
+} from "../../sessions/user-turn-transcript.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
 
 const runEmbeddedPiAgentMock = vi.fn();
@@ -53,6 +57,14 @@ function joinPromptSections(...sections: Array<string | undefined>): string {
     }
   }
   return promptSections.join("\n\n");
+}
+
+function createTestUserTurnRecorder(message: PersistedUserTurnMessage) {
+  return createUserTurnTranscriptRecorder({
+    message,
+    target: { transcriptPath: "/tmp/session.jsonl" },
+    updateMode: "none",
+  });
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
@@ -501,6 +513,40 @@ function createQueuedRun(
 }
 
 describe("createFollowupRunner reply-lane admission", () => {
+  it("passes prepared media user turns to embedded runtime dispatch", async () => {
+    const preparedUserTurnMessage = {
+      role: "user",
+      content: "describe this",
+      MediaPath: "/tmp/image.png",
+      MediaType: "image/png",
+    } as never;
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "done" }],
+      meta: {},
+    });
+    const runner = createFollowupRunner({
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      sessionKey: "main",
+      defaultModel: "anthropic/claude",
+    });
+
+    await runner(
+      createQueuedRun({
+        userTurnTranscriptRecorder: createTestUserTurnRecorder(preparedUserTurnMessage),
+        run: {
+          provider: "anthropic",
+          model: "claude",
+        },
+      }),
+    );
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledOnce();
+    const call = requireLastMockCallArg(runEmbeddedPiAgentMock, "run embedded pi agent");
+    const recorder = requireRecord(call.userTurnTranscriptRecorder, "embedded user turn recorder");
+    expect(recorder.message).toBe(preparedUserTurnMessage);
+  });
+
   it("runs queued followups with the session id returned by admission", async () => {
     const active = createReplyOperationForTest({
       sessionKey: "main",
@@ -707,6 +753,213 @@ describe("createFollowupRunner auto fallback primary probes", () => {
 });
 
 describe("createFollowupRunner runtime config", () => {
+  it("routes queued followups through CLI runtime dispatch when the model selects a CLI backend", async () => {
+    const runtimeConfig: OpenClawConfig = {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli": { command: "claude" },
+          },
+          models: {
+            "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+    };
+    const sessionEntry: SessionEntry = {
+      sessionId: "session-cli-followup",
+      updatedAt: Date.now(),
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "cli-session-1",
+        },
+      },
+    };
+    const sessionStore = { main: sessionEntry };
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      meta: {
+        agentMeta: {
+          provider: "claude-cli",
+          model: "claude-opus-4-7",
+        },
+      },
+    });
+
+    const runner = createFollowupRunner({
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      defaultModel: "anthropic/claude-opus-4-7",
+    });
+
+    await runner(
+      createQueuedRun({
+        originatingChannel: "telegram",
+        run: {
+          config: runtimeConfig,
+          sessionId: "session-cli-followup",
+          provider: "anthropic",
+          model: "claude-opus-4-7",
+          messageProvider: "telegram",
+        },
+      }),
+    );
+
+    expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    const call = requireLastMockCallArg(runCliAgentMock, "run cli agent");
+    expect(call.provider).toBe("claude-cli");
+    expect(call.model).toBe("claude-opus-4-7");
+    expect(call.config).toBe(runtimeConfig);
+    expect(call.cliSessionId).toBe("cli-session-1");
+    expect(call.messageChannel).toBe("telegram");
+    expect(call).toMatchObject({
+      sessionId: "session-cli-followup",
+      sessionKey: "main",
+      agentId: "agent",
+      workspaceDir: "/tmp",
+      config: runtimeConfig,
+      suppressNextUserMessagePersistence: false,
+    });
+    expect(call.onUserMessagePersisted).toEqual(expect.any(Function));
+  });
+
+  it("passes prepared media user turns to CLI runtime dispatch", async () => {
+    const runtimeConfig: OpenClawConfig = {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli": { command: "claude" },
+          },
+          models: {
+            "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+    };
+    const preparedUserTurnMessage = {
+      role: "user",
+      content: "describe this",
+      MediaPath: "/tmp/image.png",
+      MediaType: "image/png",
+    } as never;
+    runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "done" }],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      sessionKey: "main",
+      defaultModel: "anthropic/claude-opus-4-7",
+    });
+
+    await runner(
+      createQueuedRun({
+        userTurnTranscriptRecorder: createTestUserTurnRecorder(preparedUserTurnMessage),
+        run: {
+          config: runtimeConfig,
+          provider: "anthropic",
+          model: "claude-opus-4-7",
+        },
+      }),
+    );
+
+    expect(runCliAgentMock).toHaveBeenCalledOnce();
+    const mediaCall = requireLastMockCallArg(runCliAgentMock, "run cli agent");
+    const recorder = requireRecord(mediaCall.userTurnTranscriptRecorder, "cli user turn recorder");
+    expect(recorder.message).toBe(preparedUserTurnMessage);
+  });
+
+  it("defers queued CLI attempt terminal lifecycle events until fallback settles", async () => {
+    const realAgentEvents = await vi.importActual<typeof import("../../infra/agent-events.js")>(
+      "../../infra/agent-events.js",
+    );
+    const lifecyclePhases: string[] = [];
+    const unsubscribe = realAgentEvents.onAgentEvent((evt) => {
+      if (evt.stream !== "lifecycle") {
+        return;
+      }
+      const phase = typeof evt.data.phase === "string" ? evt.data.phase : undefined;
+      if (phase) {
+        lifecyclePhases.push(phase);
+      }
+    });
+    const runtimeConfig: OpenClawConfig = {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli": { command: "claude" },
+          },
+          models: {
+            "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+    };
+    runWithModelFallbackMock.mockImplementationOnce(
+      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => {
+        await expect(params.run("anthropic", "claude-opus-4-7")).rejects.toThrow("cli failed");
+        return {
+          result: await params.run("openai", "gpt-5.4"),
+          provider: "openai",
+          model: "gpt-5.4",
+        };
+      },
+    );
+    runCliAgentMock.mockRejectedValueOnce(new Error("cli failed"));
+    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: { runId: string }) => {
+      realAgentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "lifecycle",
+        data: { phase: "start", startedAt: Date.now() },
+      });
+      realAgentEvents.emitAgentEvent({
+        runId: params.runId,
+        stream: "lifecycle",
+        data: { phase: "end", endedAt: Date.now() },
+      });
+      return {
+        payloads: [{ text: "fallback ok" }],
+        meta: {},
+      };
+    });
+
+    const runner = createFollowupRunner({
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      sessionKey: "main",
+      defaultModel: "anthropic/claude-opus-4-7",
+    });
+
+    try {
+      await runner(
+        createQueuedRun({
+          originatingChannel: "telegram",
+          originatingTo: "chat-1",
+          run: {
+            config: runtimeConfig,
+            provider: "anthropic",
+            model: "claude-opus-4-7",
+            messageProvider: "telegram",
+          },
+        }),
+      );
+    } finally {
+      unsubscribe();
+    }
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    const embeddedCall = requireLastMockCallArg(runEmbeddedPiAgentMock, "run embedded pi agent");
+    expect(embeddedCall.suppressAssistantErrorPersistence).toBe(false);
+    expect(lifecyclePhases).toEqual(["start", "start", "end"]);
+  });
+
   it("uses the active runtime snapshot for queued embedded followup runs", async () => {
     const sourceConfig: OpenClawConfig = {
       models: {

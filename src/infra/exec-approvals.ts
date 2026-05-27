@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import type { Insertable } from "kysely";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import {
@@ -19,7 +20,8 @@ import type { CommandExplanationSummary } from "./command-analysis/explain.js";
 import { resolveAllowAlwaysPatternEntries } from "./exec-approvals-allowlist.js";
 import type { ExecCommandSegment } from "./exec-approvals-analysis.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
-import { expandHomePrefix } from "./home-dir.js";
+import { assertNoSymlinkParentsSync } from "./fs-safe-advanced.js";
+import { expandHomePrefix, resolveRequiredHomeDir } from "./home-dir.js";
 import { requestJsonlSocket } from "./jsonl-socket.js";
 import {
   executeSqliteQuerySync,
@@ -240,6 +242,32 @@ export function resolveExecApprovalsStoreLocationForDisplay(
 
 export function resolveExecApprovalsSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return expandHomePrefix(DEFAULT_SOCKET, { env });
+}
+
+export function resolveExecApprovalsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveLegacyExecApprovalsPath(env);
+}
+
+function assertNoExecApprovalsSymlinkParents(targetPath: string, trustedRoot: string): void {
+  assertNoSymlinkParentsSync({
+    rootDir: trustedRoot,
+    targetPath,
+    allowOutsideRoot: true,
+    messagePrefix: "Refusing to traverse symlink in exec approvals path",
+  });
+}
+
+function assertSafeExecApprovalsDestination(filePath: string): void {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to read exec approvals via symlink: ${filePath}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
 }
 
 function normalizeAllowlistPattern(value: string | undefined): string | null {
@@ -601,6 +629,31 @@ export function ensureExecApprovals(): ExecApprovalsFile {
   return updated;
 }
 
+function readExecApprovalsForNoPersistence(filePath: string): ExecApprovalsFile {
+  const dir = path.dirname(filePath);
+  assertNoExecApprovalsSymlinkParents(dir, resolveRequiredHomeDir());
+  assertSafeExecApprovalsDestination(filePath);
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+    return normalizeExecApprovals({ version: 1, agents: {} });
+  }
+  try {
+    const parsed = JSON.parse(raw) as ExecApprovalsFile;
+    if (parsed?.version === 1) {
+      return normalizeExecApprovals(parsed);
+    }
+  } catch {
+    // Empty or invalid persisted approvals have no usable stricter policy.
+  }
+  return normalizeExecApprovals({ version: 1, agents: {} });
+}
+
 function isExecSecurity(value: unknown): value is ExecSecurity {
   return value === "allowlist" || value === "full" || value === "deny";
 }
@@ -733,12 +786,32 @@ export type ExecApprovalsDefaultOverrides = {
   ask?: ExecAsk;
   askFallback?: ExecSecurity;
   autoAllowSkills?: boolean;
+  requireSocket?: boolean;
 };
 
 export function resolveExecApprovals(
   agentId?: string,
   overrides?: ExecApprovalsDefaultOverrides,
 ): ExecApprovalsResolved {
+  const filePath = resolveExecApprovalsPath();
+  if (!overrides?.requireSocket) {
+    const file = readExecApprovalsForNoPersistence(filePath);
+    const resolved = resolveExecApprovalsFromFile({
+      file,
+      agentId,
+      overrides,
+      path: filePath,
+      socketPath: resolveExecApprovalsSocketPath(),
+      token: "",
+    });
+    if (
+      resolved.agent.security === "full" &&
+      resolved.agent.ask === "off" &&
+      !file.socket?.token?.trim()
+    ) {
+      return resolved;
+    }
+  }
   const file = ensureExecApprovals();
   return resolveExecApprovalsDocument({
     document: file,
@@ -754,15 +827,20 @@ export function resolveExecApprovalsFromFile(params?: {
   file?: ExecApprovalsFile;
   agentId?: string;
   overrides?: ExecApprovalsDefaultOverrides;
+  path?: string;
+  socketPath?: string;
+  token?: string;
 }): ExecApprovalsResolved {
   if (params?.file) {
     return resolveExecApprovalsDocument({
       document: params.file,
       agentId: params.agentId,
       overrides: params.overrides,
-      path: resolveExecApprovalsStoreLocationForDisplay(),
-      socketPath: expandHomePrefix(params.file.socket?.path ?? resolveExecApprovalsSocketPath()),
-      token: params.file.socket?.token ?? "",
+      path: params.path ?? resolveExecApprovalsStoreLocationForDisplay(),
+      socketPath:
+        params.socketPath ??
+        expandHomePrefix(params.file.socket?.path ?? resolveExecApprovalsSocketPath()),
+      token: params.token ?? params.file.socket?.token ?? "",
     });
   }
   return resolveExecApprovals(params?.agentId, params?.overrides);

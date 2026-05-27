@@ -1,11 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { makeTempDir } from "./exec-approvals-test-helpers.js";
-import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 
 const requestJsonlSocketMock = vi.hoisted(() => vi.fn());
 
@@ -20,7 +16,6 @@ type ExecApprovalsModule = typeof import("./exec-approvals.js");
 let addAllowlistEntry: ExecApprovalsModule["addAllowlistEntry"];
 let addDurableCommandApproval: ExecApprovalsModule["addDurableCommandApproval"];
 let ensureExecApprovals: ExecApprovalsModule["ensureExecApprovals"];
-let loadExecApprovals: ExecApprovalsModule["loadExecApprovals"];
 let mergeExecApprovalsSocketDefaults: ExecApprovalsModule["mergeExecApprovalsSocketDefaults"];
 let normalizeExecApprovals: ExecApprovalsModule["normalizeExecApprovals"];
 let persistAllowAlwaysPatterns: ExecApprovalsModule["persistAllowAlwaysPatterns"];
@@ -28,21 +23,19 @@ let readExecApprovalsSnapshot: ExecApprovalsModule["readExecApprovalsSnapshot"];
 let recordAllowlistMatchesUse: ExecApprovalsModule["recordAllowlistMatchesUse"];
 let recordAllowlistUse: ExecApprovalsModule["recordAllowlistUse"];
 let requestExecApprovalViaSocket: ExecApprovalsModule["requestExecApprovalViaSocket"];
-let resolveExecApprovalsStoreLocationForDisplay: ExecApprovalsModule["resolveExecApprovalsStoreLocationForDisplay"];
+let resolveExecApprovals: ExecApprovalsModule["resolveExecApprovals"];
+let resolveExecApprovalsPath: ExecApprovalsModule["resolveExecApprovalsPath"];
 let resolveExecApprovalsSocketPath: ExecApprovalsModule["resolveExecApprovalsSocketPath"];
 let saveExecApprovals: ExecApprovalsModule["saveExecApprovals"];
 
 const tempDirs: string[] = [];
 const originalOpenClawHome = process.env.OPENCLAW_HOME;
-const originalStateDir = process.env.OPENCLAW_STATE_DIR;
-type ExecApprovalsTestDatabase = Pick<OpenClawStateKyselyDatabase, "exec_approvals_config">;
 
 beforeAll(async () => {
   ({
     addAllowlistEntry,
     addDurableCommandApproval,
     ensureExecApprovals,
-    loadExecApprovals,
     mergeExecApprovalsSocketDefaults,
     normalizeExecApprovals,
     persistAllowAlwaysPatterns,
@@ -50,7 +43,8 @@ beforeAll(async () => {
     recordAllowlistMatchesUse,
     recordAllowlistUse,
     requestExecApprovalViaSocket,
-    resolveExecApprovalsStoreLocationForDisplay,
+    resolveExecApprovals,
+    resolveExecApprovalsPath,
     resolveExecApprovalsSocketPath,
     saveExecApprovals,
   } = await import("./exec-approvals.js"));
@@ -62,16 +56,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  resetPluginStateStoreForTests();
   if (originalOpenClawHome === undefined) {
     delete process.env.OPENCLAW_HOME;
   } else {
     process.env.OPENCLAW_HOME = originalOpenClawHome;
-  }
-  if (originalStateDir === undefined) {
-    delete process.env.OPENCLAW_STATE_DIR;
-  } else {
-    process.env.OPENCLAW_STATE_DIR = originalStateDir;
   }
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -80,25 +68,25 @@ afterEach(() => {
 
 function createHomeDir(): string {
   const dir = makeTempDir();
-  const stateDir = makeTempDir();
-  tempDirs.push(dir, stateDir);
+  tempDirs.push(dir);
   process.env.OPENCLAW_HOME = dir;
-  process.env.OPENCLAW_STATE_DIR = stateDir;
   return dir;
 }
 
-function readApprovalsFile(): ExecApprovalsFile {
-  return loadExecApprovals();
+function approvalsFilePath(homeDir: string): string {
+  return path.join(homeDir, ".openclaw", "exec-approvals.json");
 }
 
-function readSqliteRaw(): string | undefined {
-  const database = openOpenClawStateDatabase();
-  const db = getNodeSqliteKysely<ExecApprovalsTestDatabase>(database.db);
-  const row = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db.selectFrom("exec_approvals_config").select("raw_json").where("config_key", "=", "current"),
-  );
-  return typeof row?.raw_json === "string" ? row.raw_json : undefined;
+function readApprovalsFile(homeDir: string): ExecApprovalsFile {
+  return JSON.parse(fs.readFileSync(approvalsFilePath(homeDir), "utf8")) as ExecApprovalsFile;
+}
+
+function listExecApprovalTempFiles(homeDir: string): string[] {
+  const dir = path.dirname(approvalsFilePath(homeDir));
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  return fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"));
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {
@@ -108,8 +96,8 @@ function requireRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function allowlistEntries(agentId: string): Record<string, unknown>[] {
-  const file = readApprovalsFile();
+function allowlistEntries(homeDir: string, agentId: string): Record<string, unknown>[] {
+  const file = readApprovalsFile(homeDir);
   return (file.agents?.[agentId]?.allowlist ?? []).map((entry) => requireRecord(entry));
 }
 
@@ -123,14 +111,11 @@ function expectAllowlistEntryFields(
 }
 
 describe("exec approvals store helpers", () => {
-  it("reports the SQLite store location and expands the socket path", () => {
+  it("expands home-prefixed default file and socket paths", () => {
     const dir = createHomeDir();
 
-    expect(resolveExecApprovalsStoreLocationForDisplay()).toContain(
-      path.join(process.env.OPENCLAW_STATE_DIR ?? "", "state", "openclaw.sqlite"),
-    );
-    expect(resolveExecApprovalsStoreLocationForDisplay()).toContain(
-      "#table/exec_approvals_config/current",
+    expect(path.normalize(resolveExecApprovalsPath())).toBe(
+      path.normalize(path.join(dir, ".openclaw", "exec-approvals.json")),
     );
     expect(path.normalize(resolveExecApprovalsSocketPath())).toBe(
       path.normalize(path.join(dir, ".openclaw", "exec-approvals.sock")),
@@ -153,78 +138,456 @@ describe("exec approvals store helpers", () => {
       path: "/tmp/a.sock",
       token: "a",
     });
-    expect(
-      mergeExecApprovalsSocketDefaults({
-        normalized: normalizeExecApprovals({ version: 1, agents: {} }),
-        current,
-      }).socket,
-    ).toEqual({ path: "/tmp/b.sock", token: "b" });
+
+    const merged = mergeExecApprovalsSocketDefaults({
+      normalized: normalizeExecApprovals({ version: 1, agents: {} }),
+      current,
+    });
+    expect(merged.socket).toEqual({
+      path: "/tmp/b.sock",
+      token: "b",
+    });
 
     createHomeDir();
     expect(
       mergeExecApprovalsSocketDefaults({
         normalized: normalizeExecApprovals({ version: 1, agents: {} }),
       }).socket,
-    ).toEqual({ path: resolveExecApprovalsSocketPath(), token: "" });
+    ).toEqual({
+      path: resolveExecApprovalsSocketPath(),
+      token: "",
+    });
   });
 
-  it("returns normalized snapshots from SQLite", () => {
-    createHomeDir();
+  it("returns normalized empty snapshots for missing and invalid approvals files", () => {
+    const dir = createHomeDir();
 
     const missing = readExecApprovalsSnapshot();
     expect(missing.exists).toBe(false);
     expect(missing.raw).toBeNull();
     expect(missing.file).toEqual(normalizeExecApprovals({ version: 1, agents: {} }));
-    expect(missing.path).toBe(resolveExecApprovalsStoreLocationForDisplay());
+    expect(path.normalize(missing.path)).toBe(path.normalize(approvalsFilePath(dir)));
 
-    saveExecApprovals({ version: 1, defaults: { security: "deny" }, agents: {} });
-    const sqlite = readExecApprovalsSnapshot();
-    expect(sqlite.exists).toBe(true);
-    expect(sqlite.file.defaults?.security).toBe("deny");
-    expect(sqlite.raw).toContain('"security": "deny"');
+    fs.mkdirSync(path.dirname(approvalsFilePath(dir)), { recursive: true });
+    fs.writeFileSync(approvalsFilePath(dir), "{invalid", "utf8");
+
+    const invalid = readExecApprovalsSnapshot();
+    expect(invalid.exists).toBe(true);
+    expect(invalid.raw).toBe("{invalid");
+    expect(invalid.file).toEqual(normalizeExecApprovals({ version: 1, agents: {} }));
   });
 
-  it("ensures approvals in SQLite with default socket path and generated token", () => {
-    createHomeDir();
+  it("ensures approvals file with default socket path and generated token", () => {
+    const dir = createHomeDir();
 
     const ensured = ensureExecApprovals();
-    const raw = readSqliteRaw();
+    const raw = fs.readFileSync(approvalsFilePath(dir), "utf8");
 
     expect(ensured.socket?.path).toBe(resolveExecApprovalsSocketPath());
     expect(ensured.socket?.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
-    expect(raw?.endsWith("\n")).toBe(true);
-    expect(readApprovalsFile().socket).toEqual(ensured.socket);
+    expect(raw.endsWith("\n")).toBe(true);
+    expect(readApprovalsFile(dir).socket).toEqual(ensured.socket);
   });
 
-  it("imports legacy JSON approvals before creating SQLite defaults", () => {
+  it("does not create an approvals file when resolving the missing default no-prompt policy", () => {
     const dir = createHomeDir();
-    const legacyPath = path.join(dir, ".openclaw", "exec-approvals.json");
-    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
-    fs.writeFileSync(
-      legacyPath,
-      JSON.stringify(
-        {
+
+    const resolved = resolveExecApprovals("main", {
+      security: "full",
+      ask: "off",
+    });
+
+    expect(resolved.agent.security).toBe("full");
+    expect(resolved.agent.ask).toBe("off");
+    expect(resolved.socketPath).toBe(resolveExecApprovalsSocketPath());
+    expect(resolved.token).toBe("");
+    expect(fs.existsSync(approvalsFilePath(dir))).toBe(false);
+  });
+
+  it("does not rewrite an empty approvals file for the default no-prompt policy", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(approvalsPath, "", "utf8");
+
+    const resolved = resolveExecApprovals("main", {
+      security: "full",
+      ask: "off",
+    });
+
+    expect(resolved.agent.security).toBe("full");
+    expect(resolved.agent.ask).toBe("off");
+    expect(resolved.token).toBe("");
+    expect(fs.statSync(approvalsPath).size).toBe(0);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "hardens existing token-bearing approvals files before resolving default no-prompt policy",
+    () => {
+      const dir = createHomeDir();
+      const approvalsPath = approvalsFilePath(dir);
+      fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+      fs.writeFileSync(
+        approvalsPath,
+        JSON.stringify({
           version: 1,
-          socket: { path: "/tmp/legacy.sock", token: "legacy-token" },
-          defaults: { security: "allowlist", ask: "on-miss" },
-          agents: { main: { allowlist: [{ pattern: "/usr/bin/rg", id: "keep-id" }] } },
-        } satisfies ExecApprovalsFile,
-        null,
-        2,
-      ) + "\n",
-    );
+          socket: { path: resolveExecApprovalsSocketPath(), token: "existing-token" },
+          defaults: { security: "full", ask: "off" },
+          agents: {},
+        }),
+        { mode: 0o644 },
+      );
+      fs.chmodSync(approvalsPath, 0o644);
 
-    const ensured = ensureExecApprovals();
+      const resolved = resolveExecApprovals("main", {
+        security: "full",
+        ask: "off",
+      });
 
-    expect(ensured.socket).toEqual({ path: "/tmp/legacy.sock", token: "legacy-token" });
-    expect(ensured.defaults).toEqual({ security: "allowlist", ask: "on-miss" });
-    expect(ensured.agents?.main?.allowlist).toEqual([{ pattern: "/usr/bin/rg", id: "keep-id" }]);
-    expect(fs.existsSync(legacyPath)).toBe(false);
-    expect(readSqliteRaw()).toContain("legacy-token");
+      expect(resolved.agent.security).toBe("full");
+      expect(resolved.agent.ask).toBe("off");
+      expect(resolved.token).toBe("existing-token");
+      expect(fs.statSync(approvalsPath).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "rejects symlinked approvals files before resolving the default no-prompt policy",
+    () => {
+      const dir = createHomeDir();
+      const approvalsPath = approvalsFilePath(dir);
+      const linkedPath = path.join(dir, "linked-approvals.json");
+      fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+      fs.writeFileSync(
+        linkedPath,
+        JSON.stringify({
+          version: 1,
+          defaults: { security: "full", ask: "off" },
+          agents: {},
+        }),
+        "utf8",
+      );
+      fs.symlinkSync(linkedPath, approvalsPath);
+
+      expect(() =>
+        resolveExecApprovals("main", {
+          security: "deny",
+          ask: "always",
+        }),
+      ).toThrow("Refusing to write exec approvals via symlink");
+    },
+  );
+
+  it("does not treat approvals path access errors as a missing default policy", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const actualReadFileSync = fs.readFileSync.bind(fs);
+    vi.spyOn(fs, "readFileSync").mockImplementation((target, options) => {
+      if (String(target) === approvalsPath) {
+        throw Object.assign(new Error("approval path blocked"), { code: "EACCES" });
+      }
+      return actualReadFileSync(target, options as never);
+    });
+
+    expect(() =>
+      resolveExecApprovals("main", {
+        security: "full",
+        ask: "off",
+      }),
+    ).toThrow("approval path blocked");
+  });
+
+  it("creates an approvals file when resolving a missing policy that may prompt", () => {
+    const dir = createHomeDir();
+
+    const resolved = resolveExecApprovals("main", {
+      security: "allowlist",
+      ask: "on-miss",
+    });
+
+    expect(resolved.agent.security).toBe("allowlist");
+    expect(resolved.agent.ask).toBe("on-miss");
+    expect(resolved.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(readApprovalsFile(dir).socket).toEqual(resolved.file.socket);
+  });
+
+  it("creates an approvals file for default no-prompt policy when a socket is required", () => {
+    const dir = createHomeDir();
+
+    const resolved = resolveExecApprovals("main", {
+      security: "full",
+      ask: "off",
+      requireSocket: true,
+    });
+
+    expect(resolved.agent.security).toBe("full");
+    expect(resolved.agent.ask).toBe("off");
+    expect(resolved.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(readApprovalsFile(dir).socket).toEqual(resolved.file.socket);
+  });
+
+  it("atomically replaces existing approvals files instead of mutating linked inodes", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const linkedPath = path.join(dir, "linked.json");
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(linkedPath, '{"sentinel":true}\n', "utf8");
+    fs.linkSync(linkedPath, approvalsPath);
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(fs.readFileSync(approvalsPath, "utf8")).toContain('"security": "full"');
+    expect(fs.readFileSync(linkedPath, "utf8")).toBe('{"sentinel":true}\n');
+    expect(fs.statSync(approvalsPath).ino).not.toBe(fs.statSync(linkedPath).ino);
+  });
+
+  it("normalizes successful rename writes to owner-only permissions", () => {
+    const dir = createHomeDir();
+    const actualWriteFileSync = fs.writeFileSync.bind(fs);
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+      const result = actualWriteFileSync(file, data, options as never);
+      const filePath = String(file);
+      if (
+        typeof file !== "number" &&
+        filePath.includes(".exec-approvals.") &&
+        filePath.endsWith(".tmp")
+      ) {
+        fs.chmodSync(file, 0o000);
+      }
+      return result;
+    });
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(fs.readFileSync(approvalsFilePath(dir), "utf8")).toContain('"security": "full"');
+    expect(fs.statSync(approvalsFilePath(dir)).mode & 0o777).toBe(0o600);
+  });
+
+  it("normalizes the approvals directory to owner-only permissions", () => {
+    const dir = createHomeDir();
+    const approvalsDir = path.dirname(approvalsFilePath(dir));
+    fs.mkdirSync(approvalsDir, { recursive: true });
+    fs.chmodSync(approvalsDir, 0o777);
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(fs.readFileSync(approvalsFilePath(dir), "utf8")).toContain('"security": "full"');
+    expect(fs.statSync(approvalsDir).mode & 0o777).toBe(0o700);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "keeps exec approvals strict when directory chmod fails",
+    () => {
+      const dir = createHomeDir();
+      const approvalsDir = path.dirname(approvalsFilePath(dir));
+      const actualChmodSync = fs.chmodSync.bind(fs);
+      vi.spyOn(fs, "chmodSync").mockImplementation((target, mode) => {
+        if (String(target) === approvalsDir) {
+          throw Object.assign(new Error("chmod denied"), { code: "EPERM" });
+        }
+        return actualChmodSync(target, mode);
+      });
+
+      expect(() => ensureExecApprovals()).toThrow("chmod denied");
+      expect(fs.existsSync(approvalsFilePath(dir))).toBe(false);
+    },
+  );
+
+  it("falls back to copying when rename cannot overwrite the approvals file", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(approvalsPath, '{"version":1,"agents":{}}\n', "utf8");
+    const actualRenameSync = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === approvalsPath) {
+        const error = Object.assign(new Error("locked target"), { code: "EPERM" });
+        throw error;
+      }
+      return actualRenameSync(from, to);
+    });
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(rename).toHaveBeenCalled();
+    expect(fs.readFileSync(approvalsPath, "utf8")).toContain('"security": "full"');
+    expect(fs.statSync(approvalsPath).mode & 0o777).toBe(0o600);
+    expect(listExecApprovalTempFiles(dir)).toStrictEqual([]);
+  });
+
+  it("normalizes fallback temp files before copying", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(approvalsPath, '{"version":1,"agents":{}}\n', "utf8");
+    const actualWriteFileSync = fs.writeFileSync.bind(fs);
+    vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+      const result = actualWriteFileSync(file, data, options as never);
+      const filePath = String(file);
+      if (
+        typeof file !== "number" &&
+        filePath.includes(".exec-approvals.") &&
+        filePath.endsWith(".tmp")
+      ) {
+        fs.chmodSync(file, 0o000);
+      }
+      return result;
+    });
+    const actualRenameSync = fs.renameSync.bind(fs);
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === approvalsPath) {
+        const error = Object.assign(new Error("locked target"), { code: "EPERM" });
+        throw error;
+      }
+      return actualRenameSync(from, to);
+    });
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(fs.readFileSync(approvalsPath, "utf8")).toContain('"security": "full"');
+    expect(fs.statSync(approvalsPath).mode & 0o777).toBe(0o600);
+    expect(listExecApprovalTempFiles(dir)).toStrictEqual([]);
+  });
+
+  it("restores the previous approvals file when fallback copy fails", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const previousRaw = '{"version":1,"defaults":{"security":"deny"},"agents":{}}\n';
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(approvalsPath, previousRaw, { encoding: "utf8", mode: 0o600 });
+    const actualRenameSync = fs.renameSync.bind(fs);
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === approvalsPath) {
+        const error = Object.assign(new Error("locked target"), { code: "EPERM" });
+        throw error;
+      }
+      return actualRenameSync(from, to);
+    });
+    const actualFtruncateSync = fs.ftruncateSync.bind(fs);
+    let forcedFallbackFailure = false;
+    vi.spyOn(fs, "ftruncateSync").mockImplementation((fd, len) => {
+      if (!forcedFallbackFailure && len === 0) {
+        forcedFallbackFailure = true;
+        actualFtruncateSync(fd, len);
+        const error = Object.assign(new Error("copy failed after opening destination"), {
+          code: "ENOSPC",
+        });
+        throw error;
+      }
+      return actualFtruncateSync(fd, len);
+    });
+
+    expect(() =>
+      saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} }),
+    ).toThrow(/copy failed after opening destination/);
+    expect(fs.readFileSync(approvalsPath, "utf8")).toBe(previousRaw);
+    expect(fs.statSync(approvalsPath).mode & 0o777).toBe(0o600);
+    expect(listExecApprovalTempFiles(dir)).toStrictEqual([]);
+  });
+
+  it("does not follow a symlink swapped in before fallback copy", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const targetPath = path.join(dir, "elsewhere.json");
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(approvalsPath, '{"version":1,"agents":{}}\n', "utf8");
+    fs.writeFileSync(targetPath, '{"sentinel":true}\n', "utf8");
+    const actualRenameSync = fs.renameSync.bind(fs);
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === approvalsPath) {
+        const error = Object.assign(new Error("locked target"), { code: "EPERM" });
+        throw error;
+      }
+      return actualRenameSync(from, to);
+    });
+    const actualStatSync = fs.statSync.bind(fs);
+    let swappedDestination = false;
+    vi.spyOn(fs, "statSync").mockImplementation((file, options) => {
+      const result = actualStatSync(file, options as never);
+      if (!swappedDestination && String(file) === approvalsPath) {
+        swappedDestination = true;
+        fs.rmSync(approvalsPath);
+        fs.symlinkSync(targetPath, approvalsPath);
+      }
+      return result;
+    });
+
+    expect(() =>
+      saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} }),
+    ).toThrow(/symlink|ELOOP/);
+    expect(fs.readFileSync(targetPath, "utf8")).toBe('{"sentinel":true}\n');
+    expect(listExecApprovalTempFiles(dir)).toStrictEqual([]);
+  });
+
+  it("does not use the copy fallback for hard-linked approvals files", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const linkedPath = path.join(dir, "linked.json");
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(linkedPath, '{"sentinel":true}\n', "utf8");
+    fs.linkSync(linkedPath, approvalsPath);
+    const actualRenameSync = fs.renameSync.bind(fs);
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === approvalsPath) {
+        const error = Object.assign(new Error("locked target"), { code: "EPERM" });
+        throw error;
+      }
+      return actualRenameSync(from, to);
+    });
+
+    expect(() =>
+      saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} }),
+    ).toThrow(/hard-linked exec approvals file/);
+    expect(fs.readFileSync(linkedPath, "utf8")).toBe('{"sentinel":true}\n');
+    expect(listExecApprovalTempFiles(dir)).toStrictEqual([]);
+  });
+
+  it("refuses to write approvals through a symlink destination", () => {
+    const dir = createHomeDir();
+    const approvalsPath = approvalsFilePath(dir);
+    const targetPath = path.join(dir, "elsewhere.json");
+    fs.mkdirSync(path.dirname(approvalsPath), { recursive: true });
+    fs.writeFileSync(targetPath, '{"sentinel":true}\n', "utf8");
+    fs.symlinkSync(targetPath, approvalsPath);
+
+    expect(() =>
+      saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} }),
+    ).toThrow(/Refusing to write exec approvals via symlink/);
+    expect(fs.readFileSync(targetPath, "utf8")).toBe('{"sentinel":true}\n');
+  });
+
+  it("accepts a symlinked OPENCLAW_HOME as the trusted approvals root", () => {
+    const realHome = makeTempDir();
+    const linkedHome = `${realHome}-link`;
+    tempDirs.push(realHome, linkedHome);
+    fs.symlinkSync(realHome, linkedHome, "dir");
+    process.env.OPENCLAW_HOME = linkedHome;
+
+    saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} });
+
+    expect(
+      fs.readFileSync(path.join(realHome, ".openclaw", "exec-approvals.json"), "utf8"),
+    ).toContain('"security": "full"');
+  });
+
+  it("refuses to traverse symlinked approvals components below a symlinked home", () => {
+    const realHome = makeTempDir();
+    const linkedHome = `${realHome}-link`;
+    const linkedStateTarget = path.join(realHome, "state-target");
+    tempDirs.push(realHome, linkedHome);
+    fs.mkdirSync(linkedStateTarget, { recursive: true });
+    fs.symlinkSync(realHome, linkedHome, "dir");
+    fs.symlinkSync(linkedStateTarget, path.join(realHome, ".openclaw"), "dir");
+    process.env.OPENCLAW_HOME = linkedHome;
+
+    expect(() =>
+      saveExecApprovals({ version: 1, defaults: { security: "full" }, agents: {} }),
+    ).toThrow(/Refusing to traverse symlink in exec approvals path/);
+    expect(fs.existsSync(path.join(linkedStateTarget, "exec-approvals.json"))).toBe(false);
   });
 
   it("adds trimmed allowlist entries once and persists generated ids", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(123_456);
 
     const approvals = ensureExecApprovals();
@@ -232,7 +595,7 @@ describe("exec approvals store helpers", () => {
     addAllowlistEntry(approvals, "worker", "/usr/bin/rg");
     addAllowlistEntry(approvals, "worker", "   ");
 
-    const allowlist = allowlistEntries("worker");
+    const allowlist = allowlistEntries(dir, "worker");
     expect(allowlist).toHaveLength(1);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/rg",
@@ -242,13 +605,13 @@ describe("exec approvals store helpers", () => {
   });
 
   it("persists durable command approvals without storing plaintext command text", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(321_000);
 
     const approvals = ensureExecApprovals();
     addDurableCommandApproval(approvals, "worker", 'printenv API_KEY="secret-value"');
 
-    const allowlist = allowlistEntries("worker");
+    const allowlist = allowlistEntries(dir, "worker");
     expect(allowlist).toHaveLength(1);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       source: "allow-always",
@@ -273,15 +636,15 @@ describe("exec approvals store helpers", () => {
         },
       },
     });
-
-    expect(normalized.agents?.main?.allowlist).toEqual([
-      expect.objectContaining({ pattern: "=command:test", source: "allow-always" }),
-    ]);
-    expect(normalized.agents?.main?.allowlist?.[0]).not.toHaveProperty("commandText");
+    const allowlist = normalized.agents?.main?.allowlist ?? [];
+    expect(allowlist).toHaveLength(1);
+    expect(allowlist[0]?.pattern).toBe("=command:test");
+    expect(allowlist[0]?.source).toBe("allow-always");
+    expect(allowlist[0]).not.toHaveProperty("commandText");
   });
 
   it("preserves source and argPattern metadata for allow-always entries", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(321_000);
 
     const approvals = ensureExecApprovals();
@@ -298,7 +661,7 @@ describe("exec approvals store helpers", () => {
       source: "allow-always",
     });
 
-    const allowlist = allowlistEntries("worker");
+    const allowlist = allowlistEntries(dir, "worker");
     expect(allowlist).toHaveLength(2);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/python3",
@@ -315,7 +678,7 @@ describe("exec approvals store helpers", () => {
   });
 
   it("records allowlist usage on the matching entry and backfills missing ids", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(999_000);
 
     const approvals: ExecApprovalsFile = {
@@ -326,7 +689,8 @@ describe("exec approvals store helpers", () => {
         },
       },
     };
-    saveExecApprovals(approvals);
+    fs.mkdirSync(path.dirname(approvalsFilePath(dir)), { recursive: true });
+    fs.writeFileSync(approvalsFilePath(dir), JSON.stringify(approvals, null, 2), "utf8");
 
     recordAllowlistUse(
       approvals,
@@ -336,7 +700,7 @@ describe("exec approvals store helpers", () => {
       "/opt/homebrew/bin/rg",
     );
 
-    const allowlist = allowlistEntries("main");
+    const allowlist = allowlistEntries(dir, "main");
     expect(allowlist).toHaveLength(2);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/rg",
@@ -349,7 +713,7 @@ describe("exec approvals store helpers", () => {
   });
 
   it("dedupes allowlist usage by pattern and argPattern", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(777_000);
 
     const approvals: ExecApprovalsFile = {
@@ -363,7 +727,8 @@ describe("exec approvals store helpers", () => {
         },
       },
     };
-    saveExecApprovals(approvals);
+    fs.mkdirSync(path.dirname(approvalsFilePath(dir)), { recursive: true });
+    fs.writeFileSync(approvalsFilePath(dir), JSON.stringify(approvals, null, 2), "utf8");
 
     recordAllowlistMatchesUse({
       approvals,
@@ -377,7 +742,7 @@ describe("exec approvals store helpers", () => {
       resolvedPath: "/usr/bin/python3",
     });
 
-    const allowlist = allowlistEntries("main");
+    const allowlist = allowlistEntries(dir, "main");
     expect(allowlist).toHaveLength(2);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/python3",
@@ -392,7 +757,7 @@ describe("exec approvals store helpers", () => {
   });
 
   it("persists allow-always patterns with shared helper", () => {
-    createHomeDir();
+    const dir = createHomeDir();
     vi.spyOn(Date, "now").mockReturnValue(654_321);
 
     const approvals = ensureExecApprovals();
@@ -426,7 +791,7 @@ describe("exec approvals store helpers", () => {
         argPattern: "^a\\.py\x00$",
       },
     ]);
-    const allowlist = allowlistEntries("worker");
+    const allowlist = allowlistEntries(dir, "worker");
     expect(allowlist).toHaveLength(1);
     expectAllowlistEntryFields(allowlist[0] ?? {}, {
       pattern: "/usr/bin/custom-tool.exe",

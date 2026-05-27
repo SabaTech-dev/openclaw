@@ -313,6 +313,7 @@ export function installSessionExternalHookWriteLock(params: {
 
 export type EmbeddedAttemptSessionLockController = {
   releaseForPrompt(): Promise<void>;
+  releaseHeldLockForAbort(): Promise<void>;
   refreshAfterOwnedSessionWrite(): void;
   reacquireAfterPrompt(): Promise<void>;
   waitForSessionEvents(session: unknown): Promise<void>;
@@ -350,6 +351,10 @@ export async function createEmbeddedAttemptSessionLockController(params: {
 
   return {
     async releaseForPrompt(): Promise<void> {
+      lockHeldByCleanup = false;
+      await release();
+    },
+    async releaseHeldLockForAbort(): Promise<void> {
       lockHeldByCleanup = false;
       await release();
     },

@@ -1,6 +1,6 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../config/types.js";
-import type { Model } from "./pi-ai-contract.js";
+import type { Model } from "@earendil-works/pi-ai";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 
 const hoisted = vi.hoisted(() => ({
   resolveModelMock: vi.fn(),
@@ -14,7 +14,7 @@ const hoisted = vi.hoisted(() => ({
   completeMock: vi.fn(),
 }));
 
-vi.mock("./pi-ai-contract.js", () => ({
+vi.mock("@earendil-works/pi-ai", () => ({
   completeSimple: hoisted.completeMock,
 }));
 
@@ -44,17 +44,11 @@ vi.mock("../plugins/provider-runtime.runtime.js", () => ({
   prepareProviderRuntimeAuth: hoisted.prepareProviderRuntimeAuthMock,
 }));
 
-let completeWithPreparedSimpleCompletionModel: typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel;
-let prepareSimpleCompletionModel: typeof import("./simple-completion-runtime.js").prepareSimpleCompletionModel;
-let prepareSimpleCompletionModelForAgent: typeof import("./simple-completion-runtime.js").prepareSimpleCompletionModelForAgent;
-
-beforeAll(async () => {
-  ({
-    completeWithPreparedSimpleCompletionModel,
-    prepareSimpleCompletionModel,
-    prepareSimpleCompletionModelForAgent,
-  } = await import("./simple-completion-runtime.js"));
-});
+import {
+  completeWithPreparedSimpleCompletionModel,
+  prepareSimpleCompletionModel,
+  prepareSimpleCompletionModelForAgent,
+} from "./simple-completion-runtime.js";
 
 beforeEach(() => {
   hoisted.resolveModelMock.mockReset();
@@ -452,7 +446,7 @@ describe("prepareSimpleCompletionModel", () => {
     });
     hoisted.getApiKeyForModelMock.mockResolvedValueOnce({
       apiKey: "ollama-local",
-      source: "stored model catalog (local marker)",
+      source: "models.json (local marker)",
       mode: "api-key",
     });
 
@@ -588,7 +582,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
       model,
       auth: {
         apiKey: "ollama-local",
-        source: "stored model catalog (local marker)",
+        source: "models.json (local marker)",
         mode: "api-key",
       },
       cfg,
