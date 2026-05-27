@@ -1436,6 +1436,7 @@ export async function runEmbeddedPiAgent(
             hasRepliedRef: params.hasRepliedRef,
             sessionFile: activeSessionFile,
             workspaceDir: resolvedWorkspace,
+            cwd: params.cwd,
             agentDir,
             config: params.config,
             allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,

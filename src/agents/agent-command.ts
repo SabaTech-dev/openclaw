@@ -475,6 +475,8 @@ async function prepareAgentCommandExecution(opts: AgentCommandOpts, runtime: Run
   const workspaceDirRaw =
     normalizedSpawned.workspaceDir ?? resolveAgentWorkspaceDir(cfg, sessionAgentId);
   const workspaceDir = resolveUserPath(workspaceDirRaw);
+  const cwd =
+    normalizeOptionalString(opts.cwd) ?? normalizeOptionalString(sessionEntryRaw?.spawnedCwd);
   const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const manifestMetadataSnapshot = loadManifestMetadataSnapshot({
     config: cfg,
@@ -552,6 +554,7 @@ async function prepareAgentCommandExecution(opts: AgentCommandOpts, runtime: Run
     sessionAgentId,
     outboundSession,
     workspaceDir,
+    cwd: cwd ? resolveUserPath(cwd) : undefined,
     agentDir,
     modelManifestContext,
     runId,
@@ -591,6 +594,7 @@ async function agentCommandInternal(
     sessionAgentId,
     outboundSession,
     workspaceDir,
+    cwd,
     agentDir,
     runId,
     acpManager,
@@ -1413,6 +1417,7 @@ async function agentCommandInternal(
               sessionAgentId,
               sessionFile: attemptSessionFile,
               workspaceDir,
+              cwd,
               body,
               isFallbackRetry,
               resolvedThinkLevel,

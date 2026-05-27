@@ -599,6 +599,7 @@ async function buildDynamicToolsForTest(
     params,
     resolvedWorkspace: workspaceDir,
     effectiveWorkspace: workspaceDir,
+    effectiveCwd: params.cwd ?? workspaceDir,
     sandboxSessionKey,
     sandbox: { enabled: false, backendId: "docker" } as never,
     nativeToolSurfaceEnabled: true,
@@ -912,6 +913,47 @@ describe("runCodexAppServerAttempt", () => {
     await testing.ensureCodexWorkspaceDirOnceForTests(workspaceDir);
 
     expect((await fs.stat(workspaceDir)).isDirectory()).toBe(true);
+  });
+
+  it("uses task cwd for Codex execution while keeping bootstrap workspace separate", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const taskCwd = path.join(tempDir, "task-repo");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.mkdir(taskCwd, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "workspace bootstrap", "utf8");
+    await fs.writeFile(path.join(taskCwd, "task-marker.txt"), "task marker", "utf8");
+    const harness = createStartedThreadHarness();
+    const toolOptions: Array<{ cwd?: string; workspaceDir?: string }> = [];
+    testing.setOpenClawCodingToolsFactoryForTests((options) => {
+      toolOptions.push(options);
+      return [createRuntimeDynamicTool("bash")];
+    });
+    const params = createParams(sessionFile, workspaceDir);
+    params.cwd = taskCwd;
+    params.disableTools = false;
+
+    const run = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await run;
+
+    const threadStart = harness.requests.find((request) => request.method === "thread/start");
+    expect((threadStart?.params as { cwd?: string } | undefined)?.cwd).toBe(taskCwd);
+    const turnStart = harness.requests.find((request) => request.method === "turn/start");
+    expect((turnStart?.params as { cwd?: string } | undefined)?.cwd).toBe(taskCwd);
+    expect(toolOptions).toHaveLength(2);
+    for (const options of toolOptions) {
+      expect(options.workspaceDir).toBe(workspaceDir);
+      expect(options.cwd).toBe(taskCwd);
+    }
+    const header = JSON.parse((await fs.readFile(sessionFile, "utf8")).split("\n")[0] ?? "{}") as {
+      cwd?: string;
+      id?: string;
+    };
+    expect(header.id).toBe(params.sessionId);
+    expect(header.cwd).toBe(taskCwd);
   });
 
   it("filters Codex-native dynamic tools from app-server tool exposure", () => {

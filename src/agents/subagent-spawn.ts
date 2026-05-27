@@ -253,6 +253,9 @@ function buildDirectChildSessionPatch(patch: Record<string, unknown>): Partial<S
   if (typeof patch.spawnedWorkspaceDir === "string" && patch.spawnedWorkspaceDir.trim()) {
     entry.spawnedWorkspaceDir = patch.spawnedWorkspaceDir.trim();
   }
+  if (typeof patch.spawnedCwd === "string" && patch.spawnedCwd.trim()) {
+    entry.spawnedCwd = patch.spawnedCwd.trim();
+  }
   const inheritedToolDeny = normalizeInheritedToolDenylist(patch.inheritedToolDeny);
   if (inheritedToolDeny.length > 0) {
     entry.inheritedToolDeny = inheritedToolDeny;
@@ -815,7 +818,7 @@ export async function spawnSubagentDirect(
     };
   }
   const targetAgentId = requestedAgentId ? normalizeAgentId(requestedAgentId) : requesterAgentId;
-  const explicitWorkspaceDir = normalizeOptionalString(params.cwd);
+  const spawnedCwd = normalizeOptionalString(params.cwd);
   const requesterOrigin = normalizeDeliveryContext({
     channel: ctx.agentChannel,
     accountId: ctx.agentAccountId,
@@ -1056,13 +1059,13 @@ export async function spawnSubagentDirect(
   const spawnedWorkspaceDir = resolveSpawnedWorkspaceInheritance({
     config: cfg,
     targetAgentId,
-    explicitWorkspaceDir: explicitWorkspaceDir ?? inheritedWorkspaceDir,
+    explicitWorkspaceDir: inheritedWorkspaceDir,
   });
 
   const materializedAttachments = await materializeSubagentAttachments({
     config: cfg,
     targetAgentId,
-    workspaceDir: spawnedWorkspaceDir,
+    workspaceDir: spawnedCwd ?? spawnedWorkspaceDir,
     attachments: params.attachments,
     mountPathHint,
   });
@@ -1103,6 +1106,7 @@ export async function spawnSubagentDirect(
   const spawnLineagePatchError = await patchChildSession({
     spawnedBy: spawnedByKey,
     ...(spawnedMetadata.workspaceDir ? { spawnedWorkspaceDir: spawnedMetadata.workspaceDir } : {}),
+    ...(spawnedCwd ? { spawnedCwd } : {}),
   });
   if (spawnLineagePatchError) {
     await cleanupFailedSpawnBeforeAgentStart({

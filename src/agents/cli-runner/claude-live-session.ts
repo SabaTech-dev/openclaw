@@ -1,13 +1,13 @@
 import crypto from "node:crypto";
 import type { ReplyBackendHandle } from "../../auto-reply/reply/reply-run-registry.js";
 import type { CliBackendConfig } from "../../config/types.js";
-import { isRecord } from "../../shared/record-coerce.js";
 import {
   loadExecApprovals,
   maxAsk,
   minSecurity,
   resolveExecApprovalsFromFile,
 } from "../../infra/exec-approvals.js";
+import { isRecord } from "../../shared/record-coerce.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import {
   createCliJsonlStreamingParser,
@@ -204,8 +204,11 @@ export function buildClaudeLiveArgs(params: {
     upsertArgValue(
       upsertArgValue(
         upsertArgValue(
-          stripLiveProcessArgs(params.args, params.backend,
-            params.useResume && params.backend.systemPromptWhen !== "always"),
+          stripLiveProcessArgs(
+            params.args,
+            params.backend,
+            params.useResume && params.backend.systemPromptWhen !== "always",
+          ),
           "--input-format",
           "stream-json",
         ),
@@ -295,6 +298,7 @@ function buildClaudeLiveFingerprint(params: {
   return JSON.stringify({
     command: params.context.preparedBackend.backend.command,
     workspaceDirHash: sha256(params.context.workspaceDir),
+    cwdHash: params.context.cwdHash ?? sha256(params.context.cwd ?? params.context.workspaceDir),
     provider: params.context.params.provider,
     model: params.context.normalizedModel,
     systemPromptHash: sha256(params.context.systemPrompt),
@@ -895,7 +899,7 @@ async function createClaudeLiveSession(params: {
     replaceExistingScope: true,
     mode: "child",
     argv: params.argv,
-    cwd: params.context.workspaceDir,
+    cwd: params.context.cwd ?? params.context.workspaceDir,
     env: params.env,
     stdinMode: "pipe-open",
     captureOutput: false,

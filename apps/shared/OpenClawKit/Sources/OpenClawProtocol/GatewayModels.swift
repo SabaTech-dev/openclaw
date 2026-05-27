@@ -2177,6 +2177,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let model: AnyCodable?
     public let spawnedby: AnyCodable?
     public let spawnedworkspacedir: AnyCodable?
+    public let spawnedcwd: AnyCodable?
     public let spawndepth: AnyCodable?
     public let subagentrole: AnyCodable?
     public let subagentcontrolscope: AnyCodable?
@@ -2202,6 +2203,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         model: AnyCodable?,
         spawnedby: AnyCodable?,
         spawnedworkspacedir: AnyCodable?,
+        spawnedcwd: AnyCodable?,
         spawndepth: AnyCodable?,
         subagentrole: AnyCodable?,
         subagentcontrolscope: AnyCodable?,
@@ -2226,6 +2228,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.model = model
         self.spawnedby = spawnedby
         self.spawnedworkspacedir = spawnedworkspacedir
+        self.spawnedcwd = spawnedcwd
         self.spawndepth = spawndepth
         self.subagentrole = subagentrole
         self.subagentcontrolscope = subagentcontrolscope
@@ -2252,6 +2255,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case model
         case spawnedby = "spawnedBy"
         case spawnedworkspacedir = "spawnedWorkspaceDir"
+        case spawnedcwd = "spawnedCwd"
         case spawndepth = "spawnDepth"
         case subagentrole = "subagentRole"
         case subagentcontrolscope = "subagentControlScope"

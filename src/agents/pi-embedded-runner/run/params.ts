@@ -101,6 +101,8 @@ export type RunEmbeddedPiAgentParams = {
   allowGatewaySubagentBinding?: boolean;
   sessionFile: string;
   workspaceDir: string;
+  /** Task working directory for tool/runtime execution. Defaults to workspaceDir. */
+  cwd?: string;
   agentDir?: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;

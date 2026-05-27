@@ -22,6 +22,7 @@ export async function prepareSessionManagerForRun(params: {
 }): Promise<void> {
   const sm = params.sessionManager as {
     sessionId: string;
+    cwd: string;
     flushed: boolean;
     fileEntries: Array<SessionHeaderEntry | SessionMessageEntry | { type: string }>;
     byId?: Map<string, unknown>;
@@ -38,12 +39,17 @@ export async function prepareSessionManagerForRun(params: {
     header.id = params.sessionId;
     header.cwd = params.cwd;
     sm.sessionId = params.sessionId;
+    sm.cwd = params.cwd;
     return;
   }
 
   if (params.hadSessionFile && header && !hasAssistant) {
     // Reset file so the first assistant flush includes header+user+assistant in order.
     await fs.writeFile(params.sessionFile, "", "utf-8");
+    header.id = params.sessionId;
+    header.cwd = params.cwd;
+    sm.sessionId = params.sessionId;
+    sm.cwd = params.cwd;
     sm.fileEntries = [header];
     sm.byId?.clear?.();
     sm.labelsById?.clear?.();

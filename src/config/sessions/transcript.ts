@@ -38,6 +38,7 @@ async function loadPiCodingAgentModule(): Promise<
 async function ensureSessionHeader(params: {
   sessionFile: string;
   sessionId: string;
+  cwd?: string;
 }): Promise<void> {
   if (fs.existsSync(params.sessionFile)) {
     return;
@@ -49,7 +50,7 @@ async function ensureSessionHeader(params: {
     version: CURRENT_SESSION_VERSION,
     id: params.sessionId,
     timestamp: new Date().toISOString(),
-    cwd: process.cwd(),
+    cwd: params.cwd ?? process.cwd(),
   };
   await fs.promises.writeFile(params.sessionFile, `${JSON.stringify(header)}\n`, {
     encoding: "utf-8",
@@ -337,7 +338,11 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
       } = await runWithOwnedSessionTranscriptWritePublication(
         { sessionFile, sessionKey: resolved.normalizedKey },
         async () => {
-          await ensureSessionHeader({ sessionFile, sessionId: entry.sessionId });
+          await ensureSessionHeader({
+            sessionFile,
+            sessionId: entry.sessionId,
+            cwd: entry.spawnedCwd,
+          });
           return await appendSessionTranscriptMessage({
             transcriptPath: sessionFile,
             message,

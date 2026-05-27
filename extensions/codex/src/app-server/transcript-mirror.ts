@@ -147,6 +147,8 @@ function buildMirrorDedupeIdentity(message: MirroredAgentMessage): string {
 
 export async function mirrorCodexAppServerTranscript(params: {
   sessionFile: string;
+  sessionId?: string;
+  cwd?: string;
   sessionKey?: string;
   agentId?: string;
   messages: AgentMessage[];
@@ -207,6 +209,8 @@ export async function mirrorCodexAppServerTranscript(params: {
         transcriptPath: params.sessionFile,
         message: messageToAppend,
         idempotencyLookup: idempotencyKey ? "caller-checked" : "scan",
+        sessionId: params.sessionId,
+        cwd: params.cwd,
         config: params.config,
       });
       if (appendedMessage.role === "user") {

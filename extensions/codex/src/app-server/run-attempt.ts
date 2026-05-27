@@ -1082,6 +1082,13 @@ export async function runCodexAppServerAttempt(
       ? resolvedWorkspace
       : sandbox.workspaceDir
     : resolvedWorkspace;
+  const requestedCwd = params.cwd ? resolveUserPath(params.cwd) : undefined;
+  if (sandbox?.enabled && requestedCwd && requestedCwd !== resolvedWorkspace) {
+    throw new Error(
+      "cwd override is not supported for sandboxed Codex app-server runs; omit cwd or use the agent workspace as cwd",
+    );
+  }
+  const effectiveCwd = sandbox?.enabled ? effectiveWorkspace : (requestedCwd ?? effectiveWorkspace);
   await ensureCodexWorkspaceDirOnce(effectiveWorkspace);
   preDynamicStartupStages.mark("effective-workspace");
   const appServer = resolveCodexAppServerForOpenClawToolPolicy({
@@ -1238,6 +1245,7 @@ export async function runCodexAppServerAttempt(
     params,
     resolvedWorkspace,
     effectiveWorkspace,
+    effectiveCwd,
     sandboxSessionKey,
     sandbox,
     nativeToolSurfaceEnabled,
@@ -1253,6 +1261,7 @@ export async function runCodexAppServerAttempt(
     params,
     resolvedWorkspace,
     effectiveWorkspace,
+    effectiveCwd,
     sandboxSessionKey,
     sandbox,
     nativeToolSurfaceEnabled,
@@ -1488,7 +1497,7 @@ export async function runCodexAppServerAttempt(
   });
   const trajectoryRecorder = createCodexTrajectoryRecorder({
     attempt: params,
-    cwd: effectiveWorkspace,
+    cwd: effectiveCwd,
     developerInstructions: buildRenderedCodexDeveloperInstructions(),
     prompt: codexTurnPromptText,
     tools: toolBridge.availableSpecs,
@@ -1507,7 +1516,7 @@ export async function runCodexAppServerAttempt(
     }
   };
   let codexEnvironmentSelection: CodexTurnEnvironmentParams[] | undefined;
-  let codexExecutionCwd = effectiveWorkspace;
+  let codexExecutionCwd = effectiveCwd;
   let codexSandboxPolicy: CodexSandboxPolicy | undefined;
   let restartContextEngineCodexThread:
     | (() => Promise<CodexAppServerThreadLifecycleBinding>)
@@ -1679,7 +1688,7 @@ export async function runCodexAppServerAttempt(
               nativeToolSurfaceEnabled,
             );
             const startupExecutionCwd = resolveCodexAppServerExecutionCwd({
-              effectiveWorkspace,
+              effectiveCwd,
               environment: startupSandboxEnvironment,
               nativeToolSurfaceEnabled,
             });
@@ -1832,7 +1841,7 @@ export async function runCodexAppServerAttempt(
   });
   recordCodexTrajectoryContext(trajectoryRecorder, {
     attempt: params,
-    cwd: effectiveWorkspace,
+    cwd: effectiveCwd,
     developerInstructions: promptBuild.developerInstructions,
     prompt: codexTurnPromptText,
     tools: toolBridge.availableSpecs,
@@ -3281,6 +3290,7 @@ export async function runCodexAppServerAttempt(
     agentId: sessionAgentId,
     notifyUserMessagePersisted,
     sessionKey: sandboxSessionKey,
+    cwd: effectiveCwd,
     threadId: thread.threadId,
     turnId: activeTurnId,
   });
@@ -3397,6 +3407,7 @@ export async function runCodexAppServerAttempt(
       notifyUserMessagePersisted,
       result,
       sessionKey: contextSessionKey,
+      cwd: effectiveCwd,
       threadId: thread.threadId,
       turnId: activeTurnId,
     });
@@ -4170,6 +4181,7 @@ type DynamicToolBuildParams = {
   params: EmbeddedRunAttemptParams;
   resolvedWorkspace: string;
   effectiveWorkspace: string;
+  effectiveCwd?: string;
   sandboxSessionKey: string;
   sandbox: Awaited<ReturnType<typeof resolveSandboxContext>>;
   nativeToolSurfaceEnabled?: boolean;
@@ -4318,6 +4330,7 @@ async function buildDynamicTools(input: DynamicToolBuildParams) {
     sessionId: params.sessionId,
     runId: params.runId,
     agentDir,
+    cwd: input.effectiveCwd ?? input.effectiveWorkspace,
     workspaceDir: input.effectiveWorkspace,
     spawnWorkspaceDir: resolveAttemptSpawnWorkspaceDir({
       sandbox: input.sandbox,
@@ -4572,13 +4585,13 @@ function resolveCodexSandboxEnvironmentSelection(
 }
 
 function resolveCodexAppServerExecutionCwd(params: {
-  effectiveWorkspace: string;
+  effectiveCwd: string;
   environment?: CodexSandboxExecEnvironment;
   nativeToolSurfaceEnabled: boolean;
 }): string {
   return params.environment && params.nativeToolSurfaceEnabled
     ? params.environment.cwd
-    : params.effectiveWorkspace;
+    : params.effectiveCwd;
 }
 
 function resolveCodexExternalSandboxPolicyForOpenClawSandbox(
@@ -6153,6 +6166,7 @@ async function mirrorTranscriptBestEffort(params: {
   notifyUserMessagePersisted: (message: Extract<AgentMessage, { role: "user" }>) => void;
   result: EmbeddedRunAttemptResult;
   sessionKey?: string;
+  cwd: string;
   threadId: string;
   turnId: string;
 }): Promise<void> {
@@ -6166,6 +6180,8 @@ async function mirrorTranscriptBestEffort(params: {
       sessionFile: params.params.sessionFile,
       agentId: params.agentId,
       sessionKey: params.sessionKey,
+      sessionId: params.params.sessionId,
+      cwd: params.cwd,
       messages,
       // Scope is thread-stable. Each entry in `messagesSnapshot` is tagged
       // with a per-turn `attachCodexMirrorIdentity` value carrying its own
@@ -6234,6 +6250,7 @@ async function mirrorPromptAtTurnStartBestEffort(params: {
   agentId?: string;
   notifyUserMessagePersisted: (message: Extract<AgentMessage, { role: "user" }>) => void;
   sessionKey?: string;
+  cwd: string;
   threadId: string;
   turnId: string;
 }): Promise<void> {
@@ -6250,6 +6267,8 @@ async function mirrorPromptAtTurnStartBestEffort(params: {
         sessionFile: params.params.sessionFile,
         agentId: params.agentId,
         sessionKey: params.sessionKey,
+        sessionId: params.params.sessionId,
+        cwd: params.cwd,
         messages: [userPromptMessage],
         idempotencyScope: `codex-app-server:${params.threadId}`,
         config: params.params.config,

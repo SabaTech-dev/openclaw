@@ -24,6 +24,7 @@ describe("cli-session helpers", () => {
       authEpochVersion: 2,
       extraSystemPromptHash: "prompt-hash",
       promptToolNamesHash: "prompt-tools-hash",
+      cwdHash: "cwd-hash",
       mcpConfigHash: "mcp-hash",
       mcpResumeHash: "mcp-resume-hash",
     });
@@ -38,6 +39,7 @@ describe("cli-session helpers", () => {
       authEpochVersion: 2,
       extraSystemPromptHash: "prompt-hash",
       promptToolNamesHash: "prompt-tools-hash",
+      cwdHash: "cwd-hash",
       mcpConfigHash: "mcp-hash",
       mcpResumeHash: "mcp-resume-hash",
     });
@@ -177,6 +179,29 @@ describe("cli-session helpers", () => {
         mcpConfigHash: "mcp-b",
       }),
     ).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("invalidates reuse when the task cwd changes", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authEpochVersion: 2,
+      cwdHash: hashCliSessionText("/work/repo-a"),
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authEpochVersion: 2,
+        cwdHash: hashCliSessionText("/work/repo-b"),
+      }),
+    ).toEqual({ invalidatedReason: "cwd" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authEpochVersion: 2,
+        cwdHash: hashCliSessionText("/work/repo-a"),
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
   });
 
   it("reuses when auth profile ids rotate but the versioned auth epoch is stable", () => {

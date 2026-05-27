@@ -834,6 +834,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         extraSystemPromptStatic: "",
         cliSessionBinding: {
           sessionId: "cli-session",
+          cwdHash: hashCliSessionText(dir),
         },
         config: createCliBackendConfig({ systemPromptOverride: null }),
       });
@@ -864,6 +865,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         cliSessionBinding: {
           sessionId: "cli-session",
           extraSystemPromptHash: hashCliSessionText(staticPrompt),
+          cwdHash: hashCliSessionText(dir),
         },
         config: createCliBackendConfig(),
       });
@@ -943,6 +945,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         runId: "run-test-session-expired-reseed-opt-in",
         cliSessionBinding: {
           sessionId: "cli-session",
+          cwdHash: hashCliSessionText(dir),
         },
         config: createCliBackendConfig({
           systemPromptOverride: null,
@@ -1448,7 +1451,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         model: "opus",
         timeoutMs: 1_000,
         runId: "run-77011-present",
-        cliSessionBinding: { sessionId: "live-claude-sid" },
+        cliSessionBinding: { sessionId: "live-claude-sid", cwdHash: hashCliSessionText(dir) },
         cliSessionId: "live-claude-sid",
         config: createCliBackendConfig({ systemPromptOverride: null }),
       });
@@ -1741,7 +1744,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         model: "test-model",
         timeoutMs: 1_000,
         runId: "run-77011-other-provider",
-        cliSessionBinding: { sessionId: "test-cli-sid" },
+        cliSessionBinding: { sessionId: "test-cli-sid", cwdHash: hashCliSessionText(dir) },
         config: createCliBackendConfig({ systemPromptOverride: null }),
       });
 
