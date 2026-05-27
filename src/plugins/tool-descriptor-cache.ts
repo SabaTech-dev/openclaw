@@ -86,13 +86,50 @@ function getDescriptorConfigCacheKey(
   return resolved;
 }
 
+function stableDescriptorCacheValueKey(value: unknown, stack = new WeakSet<object>()): string {
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+  if (typeof value === "number") {
+    return JSON.stringify(Number.isFinite(value) ? value : String(value));
+  }
+  if (typeof value === "bigint") {
+    return JSON.stringify(value.toString());
+  }
+  if (typeof value === "function" || typeof value === "symbol") {
+    return JSON.stringify(`[${typeof value}]`);
+  }
+  if (typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (stack.has(value)) {
+    return JSON.stringify("[Circular]");
+  }
+
+  stack.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => stableDescriptorCacheValueKey(entry, stack)).join(",")}]`;
+    }
+
+    const fields: string[] = [];
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record).toSorted()) {
+      fields.push(`${JSON.stringify(key)}:${stableDescriptorCacheValueKey(record[key], stack)}`);
+    }
+    return `{${fields.join(",")}}`;
+  } finally {
+    stack.delete(value);
+  }
+}
+
 function buildDescriptorContextCacheKey(params: {
   ctx: OpenClawPluginToolContext;
   currentRuntimeConfig?: PluginLoadOptions["config"] | null;
   configCacheKeyMemo?: PluginToolDescriptorConfigCacheKeyMemo;
 }): string {
   const { ctx } = params;
-  return JSON.stringify({
+  return stableDescriptorCacheValueKey({
     config: getDescriptorConfigCacheKey(ctx.config, params.configCacheKeyMemo),
     runtimeConfig: getDescriptorConfigCacheKey(ctx.runtimeConfig, params.configCacheKeyMemo),
     currentRuntimeConfig: getDescriptorConfigCacheKey(

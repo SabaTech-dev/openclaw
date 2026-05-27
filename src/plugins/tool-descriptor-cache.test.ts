@@ -123,6 +123,69 @@ describe("plugin tool descriptor cache keys", () => {
     expect(firstKey).not.toBe(secondKey);
   });
 
+  it("keeps descriptor keys stable across context object field ordering", () => {
+    const firstKey = buildPluginToolDescriptorCacheKey({
+      pluginId: "fuzzplugin",
+      source: "/tmp/fuzzplugin.js",
+      contractToolNames: ["fuzz_move_angles"],
+      ctx: {
+        activeModel: {
+          provider: "openai",
+          modelId: "gpt-5.5",
+          modelRef: "openai/gpt-5.5",
+        },
+        deliveryContext: {
+          channel: "telegram",
+          to: "chat:1",
+          accountId: "main",
+          threadId: "topic:1",
+        },
+      },
+    });
+    const secondKey = buildPluginToolDescriptorCacheKey({
+      pluginId: "fuzzplugin",
+      source: "/tmp/fuzzplugin.js",
+      contractToolNames: ["fuzz_move_angles"],
+      ctx: {
+        activeModel: {
+          modelRef: "openai/gpt-5.5",
+          modelId: "gpt-5.5",
+          provider: "openai",
+        },
+        deliveryContext: {
+          threadId: "topic:1",
+          accountId: "main",
+          to: "chat:1",
+          channel: "telegram",
+        },
+      },
+    });
+
+    expect(firstKey).toBe(secondKey);
+  });
+
+  it("does not throw when fuzzed context metadata is not JSON-safe", () => {
+    const deliveryContext = {
+      channel: "fuzz-channel",
+      to: "thread:1",
+      nested: {
+        sequence: 1n,
+      },
+    } as Record<string, unknown>;
+    deliveryContext.self = deliveryContext;
+
+    expect(() =>
+      buildPluginToolDescriptorCacheKey({
+        pluginId: "fuzzplugin",
+        source: "/tmp/fuzzplugin.js",
+        contractToolNames: ["fuzz_move_angles"],
+        ctx: {
+          deliveryContext: deliveryContext as never,
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it("keeps descriptor keys stable across config bookkeeping writes", () => {
     const firstConfig = {
       id: "runtime",
