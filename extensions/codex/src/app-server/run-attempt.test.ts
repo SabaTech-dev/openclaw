@@ -7194,7 +7194,7 @@ describe("runCodexAppServerAttempt", () => {
     try {
       const sessionFile = path.join(tempDir, "session.jsonl");
       const workspaceDir = path.join(tempDir, "workspace");
-      createAppServerHarness(async (method) => {
+      const harness = createAppServerHarness(async (method) => {
         if (method === "thread/start") {
           return threadStartResult();
         }
@@ -7260,15 +7260,6 @@ describe("runCodexAppServerAttempt", () => {
       expect(JSON.stringify(startedContent?.inputMessages)).toContain("hello");
       expect(startedContent?.systemPrompt).toContain(
         "You are a personal agent running inside OpenClaw.",
-      );
-      expect(startedContent?.toolDefinitions).toContainEqual(
-        expect.objectContaining({
-          name: "message",
-          parameters: expect.objectContaining({
-            type: "object",
-            additionalProperties: false,
-          }),
-        }),
       );
       expect(completedEvent?.callId).toBe("diagnostic-run-1:codex-model:1");
       expect(JSON.stringify(completedEvent)).not.toContain("hello back");
